@@ -1,8 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { useNavigate, Link } from 'react-router-dom';
+import axios from 'axios';
+import { ethers } from 'ethers';
 import { useUser } from '../context/UserContext';
 import { useToast } from '../components/Toast';
+import { API_BASE_URL } from '../config';
 import { LogIn, User, Lock, ArrowRight, Eye, EyeOff, Shield, TrendingUp, Zap, ChevronRight } from 'lucide-react';
 
 const Login = () => {
@@ -23,6 +26,65 @@ const Login = () => {
       setRememberMe(true);
     }
   }, []);
+
+  const handleWeb3Login = async () => {
+    if (typeof window.ethereum === 'undefined') {
+      toast.error('MetaMask is not installed. Please install it to continue.');
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      // 1. Request account access
+      const provider = new ethers.BrowserProvider(window.ethereum);
+      const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+      const address = accounts[0];
+      const signer = await provider.getSigner();
+
+      // 2. Fetch a nonce from the backend (mocked for frontend demo if backend is offline)
+      let nonce = `NexusAI Verification: Sign this message to prove ownership of ${address}. Nonce: ${Date.now()}`;
+      try {
+        const nonceRes = await axios.post(`${API_BASE_URL}/api/auth/nonce`, { walletAddress: address });
+        if (nonceRes.data.nonce) {
+          nonce = nonceRes.data.nonce;
+        }
+      } catch (err) {
+        console.warn('Could not fetch nonce from backend, using local nonce for demo mode');
+      }
+
+      // 3. Sign the message
+      const signature = await signer.signMessage(nonce);
+
+      // 4. Send signature to backend
+      let authData = { 
+        token: 'mock-web3-jwt-token', 
+        user: { walletAddress: address, isPremium: false } 
+      };
+
+      try {
+        const authRes = await axios.post(`${API_BASE_URL}/api/auth/verify`, {
+          walletAddress: address,
+          signature,
+          message: nonce
+        });
+        authData = authRes.data;
+      } catch (err) {
+        console.warn('Backend Web3 auth failed, falling back to demo mode');
+      }
+
+      const res = await loginWithWallet(authData.token, authData.user);
+      
+      if (res.success) {
+        toast.success('Wallet connected & signed successfully!');
+        navigate('/explore');
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error(err.message || 'Failed to connect wallet');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { API_BASE_URL } from '../config';
+import useSocket from '../hooks/useSocket';
 
 export default function LiveTickerStrip() {
   const [tickerData, setTickerData] = useState([
@@ -11,34 +12,13 @@ export default function LiveTickerStrip() {
     { symbol: 'TCS', value: '₹3,842.50', change: '-18.30', pct: '-0.47%', up: false }
   ]);
 
+  const { data: socketUpdates } = useSocket('price_update');
+
   useEffect(() => {
-    const fetchRealTicker = async () => {
-      try {
-        const response = await axios.get(`${API_BASE_URL}/api/explore`);
-        const { indices, most_traded } = response.data;
-        
-        let newTicker = [];
-        if (indices) {
-          newTicker.push(...indices.map(i => ({
-            symbol: i.name, value: i.value, change: String(i.change), pct: String(i.percent), up: i.positive
-          })));
-        }
-        if (most_traded) {
-          newTicker.push(...most_traded.map(s => ({
-            symbol: s.symbol.replace('.NS', ''), value: s.price, change: String(s.change), pct: String(s.change), up: s.positive
-          })));
-        }
-        if (newTicker.length > 0) {
-          setTickerData(newTicker);
-        }
-      } catch (e) {
-        console.error('Ticker fetch error', e);
-      }
-    };
-    fetchRealTicker();
-    const interval = setInterval(fetchRealTicker, 60000);
-    return () => clearInterval(interval);
-  }, []);
+    if (socketUpdates && socketUpdates.length > 0) {
+      setTickerData(socketUpdates);
+    }
+  }, [socketUpdates]);
 
   const TickerItem = ({ item }) => (
     <div className="flex items-center gap-3 px-4 py-1 whitespace-nowrap group cursor-default">

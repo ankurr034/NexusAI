@@ -1,0 +1,28 @@
+{
+  "name": "nexusai-backend",
+  "version": "1.0.0",
+  "description": "Backend server for NexusAI platform",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.21.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "ethers": "^6.16.0",
+    "express": "^4.21.2",
+    "express-rate-limit": "^8.5.2",
+    "jsonwebtoken": "^9.0.2",
+    "kiteconnect": "^5.3.0",
+    "mongoose": "^8.10.1",
+    "otplib": "^13.4.1",
+    "razorpay": "^2.9.5",
+    "socket.io": "^4.8.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.9"
+  }
+}

@@ -11,6 +11,42 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   LineChart, Line, ComposedChart, Legend, BarChart, Bar, PieChart, Pie, Cell, Brush
 } from 'recharts';
+import { AdvancedRealTimeChart } from "react-ts-tradingview-widgets";
+import useSocket from '../hooks/useSocket';
+import { formatTradingViewSymbol } from '../utils/symbolFormatter';
+
+const TVWidgetWrapper = React.memo(({ tvSymbol }) => {
+  const chartOptions = React.useMemo(() => ({
+    theme: "dark",
+    autosize: true,
+    allow_symbol_change: false,
+    hide_side_toolbar: false,
+    enable_publishing: false,
+    hide_top_toolbar: false,
+    save_image: false,
+    toolbar_bg: "#0f172a",
+    studies: [
+      "Volume@tv-basicstudies",
+      "MASimple@tv-basicstudies"
+    ]
+  }), []);
+
+  useEffect(() => {
+    console.log("TradingView Mounted:", tvSymbol);
+    return () => console.log("TradingView Unmounted:", tvSymbol);
+  }, [tvSymbol]);
+
+  // Using a stable key strictly bound to tvSymbol prevents TradingView from 
+  // keeping stale iframes across navigations, while React.memo prevents
+  // parent rerenders (from live price ticks) from touching this component.
+  return (
+    <AdvancedRealTimeChart
+      key={tvSymbol}
+      symbol={tvSymbol}
+      {...chartOptions}
+    />
+  );
+}, (prevProps, nextProps) => prevProps.tvSymbol === nextProps.tvSymbol);
 
 export default function StockDetail() {
   const toast = useToast();
@@ -34,7 +70,38 @@ export default function StockDetail() {
   const [dateRange, setDateRange] = useState({ start: '', end: '' });
   const [chartType, setChartType] = useState('Line');
   const [cdslOpen, setCdslOpen] = useState(false);
-  const [exchange, setExchange] = useState('NSE');
+  const [exchange, setExchange] = useState('BSE'); // Default to BSE for better TradingView widget resolution
+
+  // Formatted symbol using useMemo
+  const tvSymbol = React.useMemo(() => formatTradingViewSymbol(tickerId, exchange), [tickerId, exchange]);
+
+  // Real-time Socket Connection
+  const { socket, isConnected, data: socketData } = useSocket('price_update');
+
+  useEffect(() => {
+    if (socket && isConnected && tickerId) {
+      console.log(`[WebSocket] Subscribing to stock: ${tickerId}`);
+      socket.emit('subscribe_stock', tickerId);
+
+      return () => {
+        console.log(`[WebSocket] Unsubscribing from stock: ${tickerId}`);
+        socket.emit('unsubscribe_stock', tickerId);
+        socket.off('price_update');
+      };
+    }
+  }, [socket, isConnected, tickerId]);
+
+  useEffect(() => {
+    if (socketData && Array.isArray(socketData)) {
+      const match = socketData.find(d => d.symbol === tickerId.replace('.NS', '').replace('.BO', ''));
+      if (match) {
+        setPrice(parseFloat(match.value.replace(/,/g, '')));
+        console.log("Price Update Received");
+      }
+    }
+  }, [socketData, tickerId]);
+
+  console.log("Parent Rerender: StockDetail");
 
   const fetchBalance = useCallback(async () => {
     if (!user) return;
@@ -51,19 +118,30 @@ export default function StockDetail() {
   }, [fetchBalance, isLiveMode]);
 
   useEffect(() => {
+    const abortController = new AbortController();
+    
     const fetchData = async () => {
       if (!user) return;
       setLoading(true);
       setError(null);
       try {
-        const response = await axios.get(`${API_BASE_URL}/api/stock/${tickerId}?range_type=${timeRange}`);
+        console.log(`[API] Fetching data for: ${tickerId}`);
+        const response = await axios.get(`${API_BASE_URL}/api/stock/${tickerId}?range_type=${timeRange}`, {
+          signal: abortController.signal
+        });
         setData(response.data);
         if (response.data.current_price) setPrice(response.data.current_price);
         
         // Also check CDSL status
-        const cdslRes = await axios.get(`${API_BASE_URL}/api/cdsl/status/${tickerId}?user_id=${user.id}`);
+        const cdslRes = await axios.get(`${API_BASE_URL}/api/cdsl/status/${tickerId}?user_id=${user.id}`, {
+          signal: abortController.signal
+        });
         setIsAuthorized(cdslRes.data.authorized);
       } catch (err) {
+        if (axios.isCancel(err)) {
+           console.log(`[API] Request cancelled for ${tickerId}`);
+           return;
+        }
         setError(err.response?.data?.detail || 'Failed to fetch data');
       } finally {
         setLoading(false);
@@ -73,10 +151,17 @@ export default function StockDetail() {
       fetchData();
       
       // Fetch watchlist status
-      axios.get(`${API_BASE_URL}/api/watchlist?user_id=${user.id}`)
+      axios.get(`${API_BASE_URL}/api/watchlist?user_id=${user.id}`, { signal: abortController.signal })
         .then(res => setInWatchlist(res.data.watchlist.includes(tickerId)))
-        .catch(e => console.error(e));
+        .catch(e => {
+            if (!axios.isCancel(e)) console.error(e);
+        });
     }
+
+    return () => {
+      console.log(`[API] Cleaning up async fetch for ${tickerId}`);
+      abortController.abort();
+    };
   }, [tickerId, timeRange, user, isLiveMode]);
 
   const toggleWatchlist = async () => {
@@ -204,6 +289,43 @@ export default function StockDetail() {
     );
   };
 
+  // Generate Prediction Data Array for Chart
+  const predictionData = React.useMemo(() => {
+    if (!filteredData || filteredData.length === 0 || !data?.prediction) return [];
+    
+    // Take the last 20 days of history
+    const recentHistory = filteredData.slice(-20).map(d => ({
+      date: d.date,
+      price: d.close,
+      isPrediction: false
+    }));
+    
+    const lastPoint = recentHistory[recentHistory.length - 1];
+    
+    // Create 5 future prediction points
+    const futurePoints = [];
+    let currentPredPrice = lastPoint.price;
+    const targetPredPrice = data.prediction;
+    const step = (targetPredPrice - currentPredPrice) / 5;
+    
+    for (let i = 1; i <= 5; i++) {
+      const nextDate = new Date();
+      nextDate.setDate(nextDate.getDate() + i);
+      futurePoints.push({
+        date: nextDate.toISOString().split('T')[0],
+        prediction: currentPredPrice + (step * i),
+        isPrediction: true
+      });
+    }
+    
+    // Link the last actual point to the prediction line so it connects seamlessly
+    return [
+      ...recentHistory,
+      { date: lastPoint.date, prediction: lastPoint.price, isPrediction: true },
+      ...futurePoints
+    ];
+  }, [filteredData, data?.prediction]);
+
   const handleDateChange = (type, val) => {
     setDateRange(prev => ({ ...prev, [type]: val }));
     setTimeRange('Custom');
@@ -314,120 +436,19 @@ export default function StockDetail() {
               )}
             </div>
 
-            {/* Main Chart */}
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-[450px] w-full relative group">
-              <ResponsiveContainer width="100%" height="100%">
-                <ComposedChart data={filteredData} margin={{ top: 10, right: 0, left: -20, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="colorClose" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor={isPositive ? '#00d4aa' : '#ef4444'} stopOpacity={0.3} />
-                      <stop offset="95%" stopColor={isPositive ? '#00d4aa' : '#ef4444'} stopOpacity={0} />
-                    </linearGradient>
-                    <linearGradient id="colorForecast" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#a855f7" stopOpacity={0.4} />
-                      <stop offset="95%" stopColor="#a855f7" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#ffffff06" vertical={false} />
-                  <XAxis 
-                    dataKey="date" 
-                    stroke="#a1a1aa" 
-                    tick={{ fill: '#71717a', fontSize: 10, fontFamily: 'JetBrains Mono' }} 
-                    tickMargin={10} 
-                    minTickGap={40}
-                    tickFormatter={(val) => {
-                      if (!val) return '';
-                      if (timeRange === '1D' && val.includes(' ')) return val.split(' ')[1];
-                      return val;
-                    }}
-                  />
-                  <YAxis stroke="#a1a1aa" tick={{ fill: '#71717a', fontSize: 10, fontFamily: 'JetBrains Mono' }} domain={['auto', 'auto']} tickFormatter={(v) => `₹${v}`} />
-                  <Tooltip content={<CustomTooltip />} />
-                  
-                  {chartType === 'Line' ? (
-                    <Area type="monotone" dataKey="close" name="Close" stroke={isPositive ? '#00d4aa' : '#ef4444'} strokeWidth={2.5} fillOpacity={1} fill="url(#colorClose)" />
-                  ) : (
-                    <Bar 
-                      dataKey="high" 
-                      fill={isPositive ? '#00d4aa' : '#ef4444'} 
-                      shape={(props) => {
-                         const { index } = props;
-                         const item = filteredData[index];
-                         if (!item || !item.open) return <rect {...props} fill="transparent" />;
-                         return <CandleStick {...props} open={item.open} close={item.close} low={item.low} high={item.high} />;
-                      }} 
-                    />
-                  )}
-
-                  <Line type="monotone" dataKey="MA50" name="50-Day MA" stroke="#6366f1" strokeWidth={1.5} dot={false} strokeOpacity={0.5} />
-                  <Line type="monotone" dataKey="MA200" name="200-Day MA" stroke="#f59e0b" strokeWidth={1.5} dot={false} strokeDasharray="5 5" strokeOpacity={0.5} />
-                  {/* Professional Forecast: Shadow Depth Aesthetic */}
-                  <Area 
-                    type="basis" 
-                    dataKey="predicted" 
-                    name="AI 30-Day Shadow Projector" 
-                    stroke="#a855f7" 
-                    strokeWidth={4} 
-                    fill="url(#colorForecast)"
-                    strokeDasharray="10 5"
-                    connectNulls
-                  />
-                  {/* Subtle outer glow for the forecast line */}
-                  <Line 
-                    type="basis" 
-                    dataKey="predicted" 
-                    stroke="#a855f7" 
-                    strokeWidth={12} 
-                    strokeOpacity={0.1}
-                    dot={false}
-                    legendType="none"
-                    tooltipType="none"
-                    connectNulls
-                  />
-                  {/* Forecast Marker */}
-                  <Line 
-                    type="basis" 
-                    dataKey="predicted" 
-                    stroke="none" 
-                    dot={(props) => {
-                      const { cx, cy, payload, index } = props;
-                      // Only show a special pulse on the very last predicted point
-                      if (payload.is_forecast && index === filteredData.length - 1) {
-                        return (
-                          <g key="forecast-pulse">
-                            <circle cx={cx} cy={cy} r={8} fill="#a855f7" className="animate-ping opacity-20" />
-                            <circle cx={cx} cy={cy} r={4} fill="#a855f7" stroke="#fff" strokeWidth={2} />
-                          </g>
-                        );
-                      }
-                      return null;
-                    }}
-                  />
-                  
-                  <Brush 
-                    dataKey="date" 
-                    height={30} 
-                    stroke="#ffffff10" 
-                    fill="#111111" 
-                    travellerWidth={8}
-                    gap={10}
-                  >
-                    <AreaChart data={filteredData}>
-                      <Area dataKey="close" stroke="none" fill={isPositive ? '#00d4aa20' : '#ef444420'} />
-                    </AreaChart>
-                  </Brush>
-                </ComposedChart>
-              </ResponsiveContainer>
+            {/* Main Chart - TradingView Advanced */}
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-[500px] w-full relative group rounded-xl overflow-hidden border border-white/[0.04]">
+              <TVWidgetWrapper tvSymbol={tvSymbol} />
             </motion.div>
 
-            {/* AI LSTM Card */}
-            <div className="glass-panel p-6 border-l-4 border-l-primary flex flex-col md:flex-row justify-between items-center gap-6">
-              <div className="flex-1">
+            {/* AI LSTM Card with Prediction Line Chart */}
+            <div className="glass-panel p-6 border-l-4 border-l-primary flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
+              <div className="flex-1 w-full">
                 <h3 className="text-base font-bold text-white mb-1 flex items-center gap-2">
                   <Cpu className="w-5 h-5 text-primary" /> Neural Engine Analysis
                 </h3>
-                <p className="text-zinc-600 text-xs mb-3">Predictive optimization using user-specific historical alpha tracking</p>
-                <div className="flex items-end gap-4">
+                <p className="text-zinc-600 text-xs mb-4">Predictive optimization using user-specific historical alpha tracking</p>
+                <div className="flex items-end gap-4 mb-6">
                   <div>
                     <p className="text-zinc-600 text-[10px] mb-0.5 uppercase font-bold tracking-widest">Est. Close Prediction</p>
                     <p className="text-2xl font-extrabold text-white font-mono-data">₹{(typeof data.prediction === 'number') ? data.prediction.toFixed(2) : 'Analyzing...'}</p>
@@ -437,6 +458,26 @@ export default function StockDetail() {
                       {data.prediction > currentPrice ? '▲ BUY SIGNAL' : '▼ SELL SIGNAL'}
                     </div>
                   )}
+                </div>
+
+                {/* AI Prediction Recharts Graph */}
+                <div className="w-full h-40 bg-[#060b18]/50 rounded-xl border border-white/[0.04] p-3">
+                   <ResponsiveContainer width="100%" height="100%">
+                     <ComposedChart data={predictionData}>
+                       <defs>
+                         <linearGradient id="colorPred" x1="0" y1="0" x2="0" y2="1">
+                           <stop offset="5%" stopColor={data.prediction > currentPrice ? "#10b981" : "#ef4444"} stopOpacity={0.3}/>
+                           <stop offset="95%" stopColor={data.prediction > currentPrice ? "#10b981" : "#ef4444"} stopOpacity={0}/>
+                         </linearGradient>
+                       </defs>
+                       <XAxis dataKey="date" hide />
+                       <YAxis domain={['auto', 'auto']} hide />
+                       <Tooltip content={<CustomTooltip />} cursor={{ stroke: 'rgba(255,255,255,0.1)', strokeWidth: 1 }} />
+                       <Line type="monotone" dataKey="price" stroke="#00d4aa" strokeWidth={2} dot={false} name="Actual Price" />
+                       <Line type="monotone" dataKey="prediction" stroke={data.prediction > currentPrice ? "#10b981" : "#ef4444"} strokeWidth={2} strokeDasharray="5 5" dot={{ r: 3 }} name="AI Prediction" />
+                       <Area type="monotone" dataKey="prediction" fill="url(#colorPred)" stroke="none" />
+                     </ComposedChart>
+                   </ResponsiveContainer>
                 </div>
               </div>
 

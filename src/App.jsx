@@ -3,10 +3,14 @@ import { BrowserRouter, Routes, Route, useLocation, Navigate } from 'react-route
 import { AnimatePresence, motion } from 'framer-motion';
 import { ToastProvider } from './components/Toast';
 import { UserProvider, useUser } from './context/UserContext';
+import { Web3Provider } from './context/Web3Context';
+import { SocketProvider } from './context/SocketContext';
 import Navbar from './components/Navbar';
 import CommandBar from './components/CommandBar';
 import LiveTickerStrip from './components/LiveTickerStrip';
 import Footer from './components/Footer';
+import PremiumOverlay from './components/PremiumOverlay';
+import SmartAlerts from './components/SmartAlerts';
 const Explore = React.lazy(() => import('./pages/Explore'));
 const Portfolio = React.lazy(() => import('./pages/Portfolio'));
 const MutualFunds = React.lazy(() => import('./pages/MutualFunds'));
@@ -27,9 +31,10 @@ const AICopilot = React.lazy(() => import('./pages/AICopilot'));
 const SmartBaskets = React.lazy(() => import('./pages/SmartBaskets'));
 const Heatmap = React.lazy(() => import('./pages/Heatmap'));
 const TradeJournal = React.lazy(() => import('./pages/TradeJournal'));
+const AdminDashboard = React.lazy(() => import('./pages/AdminDashboard'));
 
 // NEW PREMIUM FEATURES — SURPASSING GROWW/ZERODHA
-const SmartAlerts = React.lazy(() => import('./pages/SmartAlerts'));
+const SmartAlertsPage = React.lazy(() => import('./pages/SmartAlerts'));
 const SIPCalculator = React.lazy(() => import('./pages/SIPCalculator'));
 const IPODashboard = React.lazy(() => import('./pages/IPODashboard'));
 const StockCompare = React.lazy(() => import('./pages/StockCompare'));
@@ -53,10 +58,29 @@ const TradingDNA = React.lazy(() => import('./pages/TradingDNA'));
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useUser();
-  if (loading) return <div className="h-screen flex items-center justify-center">
-    <div className="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin"></div>
-  </div>;
+  if (loading) return <LoadingFallback />;
   if (!user) return <Navigate to="/login" />;
+  return children;
+}
+
+
+
+function PremiumRoute({ children }) {
+  const { user, loading } = useUser();
+  if (loading) return <LoadingFallback />;
+  if (!user) return <Navigate to="/login" />;
+  
+  if (!user.isPremium && !user.isDemoPremium) {
+    return (
+      <div className="relative w-full h-full min-h-[80vh]">
+        <div className="absolute inset-0 pointer-events-none select-none overflow-hidden" style={{ filter: 'blur(12px) brightness(0.6)' }}>
+           {children}
+        </div>
+        <PremiumOverlay />
+      </div>
+    );
+  }
+  
   return children;
 }
 
@@ -95,8 +119,11 @@ function AnimatedRoutes() {
       <Route path="/heatmap" element={<Heatmap />} />
       <Route path="/journal" element={<ProtectedRoute><TradeJournal /></ProtectedRoute>} />
 
+      {/* ADMIN */}
+      <Route path="/admin" element={<AdminDashboard />} />
+
       {/* NEW PREMIUM FEATURES */}
-      <Route path="/alerts" element={<ProtectedRoute><SmartAlerts /></ProtectedRoute>} />
+      <Route path="/alerts" element={<PremiumRoute><SmartAlertsPage /></PremiumRoute>} />
       <Route path="/sip-calculator" element={<SIPCalculator />} />
       <Route path="/ipo" element={<IPODashboard />} />
       <Route path="/compare" element={<StockCompare />} />
@@ -105,7 +132,7 @@ function AnimatedRoutes() {
       <Route path="/rewards" element={<ProtectedRoute><Rewards /></ProtectedRoute>} />
 
       {/* GAME-CHANGING UNIQUE FEATURES */}
-      <Route path="/xray" element={<ProtectedRoute><PortfolioXray /></ProtectedRoute>} />
+      <Route path="/xray" element={<PremiumRoute><PortfolioXray /></PremiumRoute>} />
       <Route path="/sentiment" element={<SentimentRadar />} />
       <Route path="/earnings" element={<EarningsCalendar />} />
       <Route path="/options-builder" element={<OptionsBuilder />} />
@@ -113,11 +140,11 @@ function AnimatedRoutes() {
 
       {/* NEXT-GEN: BEYOND ANY COMPETITOR */}
       <Route path="/simulator" element={<TradeSimulator />} />
-      <Route path="/smart-money" element={<SmartMoneyFlow />} />
-      <Route path="/stress-test" element={<ProtectedRoute><StressTest /></ProtectedRoute>} />
-      <Route path="/price-targets" element={<PriceTargets />} />
+      <Route path="/smart-money" element={<PremiumRoute><SmartMoneyFlow /></PremiumRoute>} />
+      <Route path="/stress-test" element={<PremiumRoute><StressTest /></PremiumRoute>} />
+      <Route path="/price-targets" element={<PremiumRoute><PriceTargets /></PremiumRoute>} />
       <Route path="/microstructure" element={<Microstructure />} />
-      <Route path="/trading-dna" element={<ProtectedRoute><TradingDNA /></ProtectedRoute>} />
+      <Route path="/trading-dna" element={<PremiumRoute><TradingDNA /></PremiumRoute>} />
       </Routes>
     </Suspense>
   );
@@ -128,21 +155,26 @@ function App() {
     <BrowserRouter>
       <UserProvider>
         <ToastProvider>
-          <div className="min-h-screen bg-background relative text-zinc-100 noise-overlay">
-            {/* Ambient gradients — scaled for mobile */}
-            <div className="fixed top-0 left-1/4 w-[300px] sm:w-[500px] lg:w-[800px] h-[300px] sm:h-[500px] lg:h-[800px] bg-primary/[0.03] rounded-full blur-[100px] sm:blur-[150px] lg:blur-[200px] pointer-events-none" />
-            <div className="fixed bottom-0 right-1/4 w-[200px] sm:w-[400px] lg:w-[600px] h-[200px] sm:h-[400px] lg:h-[600px] bg-secondary/[0.03] rounded-full blur-[100px] sm:blur-[150px] lg:blur-[200px] pointer-events-none" />
+          <Web3Provider>
+            <SocketProvider>
+              <div className="min-h-screen bg-background relative text-zinc-100 noise-overlay">
+                {/* Ambient gradients — scaled for mobile */}
+                <div className="fixed top-0 left-1/4 w-[300px] sm:w-[500px] lg:w-[800px] h-[300px] sm:h-[500px] lg:h-[800px] bg-primary/[0.03] rounded-full blur-[100px] sm:blur-[150px] lg:blur-[200px] pointer-events-none" />
+                <div className="fixed bottom-0 right-1/4 w-[200px] sm:w-[400px] lg:w-[600px] h-[200px] sm:h-[400px] lg:h-[600px] bg-secondary/[0.03] rounded-full blur-[100px] sm:blur-[150px] lg:blur-[200px] pointer-events-none" />
 
-            <LiveTickerStrip />
-            <Navbar />
-            <CommandBar />
+                <LiveTickerStrip />
+                <Navbar />
+                <CommandBar />
 
-            <main className="max-w-7xl mx-auto px-3 sm:px-4 md:px-6 lg:px-8 py-4 sm:py-6 lg:py-8 relative z-10 min-h-[80vh]">
-              <AnimatedRoutes />
-            </main>
+                <main className="max-w-7xl mx-auto px-3 sm:px-4 md:px-6 lg:px-8 py-4 sm:py-6 lg:py-8 relative z-10 min-h-[80vh]">
+                  <AnimatedRoutes />
+                </main>
 
-            <Footer />
-          </div>
+                <Footer />
+                <SmartAlerts />
+              </div>
+            </SocketProvider>
+          </Web3Provider>
         </ToastProvider>
       </UserProvider>
     </BrowserRouter>

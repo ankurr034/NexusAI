@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Link, TrendingUp, Shield, HelpCircle, ChevronRight, CheckCircle2, AlertCircle, Building2, Globe, Activity, LayoutGrid, ArrowRight, RefreshCw, ShieldAlert } from 'lucide-react';
-import axios from 'axios';
+import { Link, TrendingUp, Shield, HelpCircle, ChevronRight, CheckCircle2, AlertCircle, Building2, Globe, Activity, LayoutGrid, ArrowRight, RefreshCw, ShieldAlert, XCircle } from 'lucide-react';
+import axiosInstance from '../utils/axiosSetup';
 import { useUser } from '../context/UserContext';
 import { useToast } from '../components/Toast';
 import { API_BASE_URL } from '../config';
@@ -19,35 +19,52 @@ export default function BrokerLink() {
   const toast = useToast();
   const navigate = useNavigate();
   const [selectedBroker, setSelectedBroker] = useState(null);
-  const [isLinking, setIsLinking] = useState(false);
-  const [isLinked, setIsLinked] = useState(false);
+  const [connectionState, setConnectionState] = useState('idle'); // idle, connecting, authenticating, connected, failed
+  const [connectionError, setConnectionError] = useState(null);
+  const [isSandboxMode, setIsSandboxMode] = useState(false);
 
   const handleLink = async (broker) => {
+    if (connectionState === 'connecting' || connectionState === 'authenticating') return;
+    
     if (!user) {
         toast.error("Please login to connect a broker");
         return;
     }
     setSelectedBroker(broker);
-    setIsLinking(true);
+    setConnectionState('connecting');
+    setConnectionError(null);
     
     try {
-      // Direct integration with backend
-      await axios.post(`${API_BASE_URL}/api/broker/connect?user_id=${user.id}`, {
+      // Simulate multiple loading phases
+      await new Promise(resolve => setTimeout(resolve, 800));
+      setConnectionState('authenticating');
+
+      // Direct integration with backend via centralized axios instance
+      const res = await axiosInstance.post(`/api/broker/connect?user_id=${user.id}`, {
         broker_name: broker.name,
         api_key: `AK-${Math.random().toString(36).substring(7).toUpperCase()}`,
         api_secret: `AS-${Math.random().toString(36).substring(7).toUpperCase()}`,
         client_id: `CID-${Math.random().toString(36).substring(7).toUpperCase()}`
       });
       
+      const { access_token, refresh_token, expires_at, is_sandbox } = res.data;
+      if (access_token) {
+        localStorage.setItem('broker_access_token', access_token);
+        localStorage.setItem('broker_refresh_token', refresh_token);
+        localStorage.setItem('broker_expires_at', expires_at);
+        setIsSandboxMode(is_sandbox || false);
+        // Force socket to reconnect and pick up new token
+        window.dispatchEvent(new Event('broker_token_updated'));
+      }
+      
       // Simulate OAuth redirect delay
       setTimeout(async () => {
         await refreshUser();
-        setIsLinking(false);
-        setIsLinked(true);
-      }, 2000);
+        setConnectionState('connected');
+      }, 1500);
     } catch (err) {
-      toast.error(err.response?.data?.detail || "Connection failed");
-      setIsLinking(false);
+      setConnectionError(err.customMessage || err.message || "Broker gateway connection failed. Please check your network.");
+      setConnectionState('failed');
     }
   };
 
@@ -124,7 +141,7 @@ export default function BrokerLink() {
 
       {/* Linking Modal */}
       <AnimatePresence>
-        {(isLinking || isLinked) && (
+        {(connectionState !== 'idle') && (
           <div className="fixed inset-0 z-[150] flex items-center justify-center p-4">
              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-black/95 backdrop-blur-2xl" />
              <motion.div 
@@ -133,17 +150,45 @@ export default function BrokerLink() {
                exit={{ scale: 0.9, opacity: 0, y: 40 }}
                className="relative w-full max-w-lg bg-[#0a0f1a] border border-white/[0.08] rounded-[48px] overflow-hidden p-12 text-center shadow-[0_50px_100px_rgba(0,0,0,0.8)]"
              >
-                {isLinking ? (
+                {(connectionState === 'connecting' || connectionState === 'authenticating') ? (
                     <div className="space-y-12 py-10">
                         <div className="relative mx-auto w-36 h-36 flex items-center justify-center">
                             <RefreshCw className="w-24 h-24 text-primary opacity-20 animate-spin" />
                             <div className="absolute w-20 h-20 bg-primary/10 rounded-3xl flex items-center justify-center border border-primary/30 backdrop-blur-md shadow-[0_0_40px_rgba(0,212,170,0.2)]">
-                                <span className="font-black text-3xl text-primary">{selectedBroker.logo}</span>
+                                <span className="font-black text-3xl text-primary">{selectedBroker?.logo}</span>
                             </div>
                         </div>
                         <div>
-                            <h3 className="text-4xl font-black text-white mb-3">Syncing Engine</h3>
-                            <p className="text-zinc-500 font-bold uppercase tracking-[0.3em] text-[10px]">Authorizing Secure Channel with {selectedBroker.name}</p>
+                            <h3 className="text-4xl font-black text-white mb-3">
+                                {connectionState === 'connecting' ? 'Establishing Tunnel' : 'Syncing Engine'}
+                            </h3>
+                            <p className="text-zinc-500 font-bold uppercase tracking-[0.3em] text-[10px]">
+                                {connectionState === 'connecting' ? `Connecting to ${selectedBroker?.name}` : `Authorizing Secure API Key`}
+                            </p>
+                        </div>
+                    </div>
+                ) : connectionState === 'failed' ? (
+                    <div className="space-y-10">
+                        <div className="w-28 h-28 bg-rose-500/10 rounded-[32px] flex items-center justify-center mx-auto border-2 border-rose-500/30 relative">
+                            <XCircle className="w-14 h-14 text-rose-500" />
+                        </div>
+                        <div>
+                            <h3 className="text-4xl font-black text-white">Connection Failed</h3>
+                            <p className="text-rose-400 text-sm mt-4 px-6 font-bold">{connectionError}</p>
+                        </div>
+                        <div className="flex flex-col gap-3">
+                           <button 
+                              onClick={() => handleLink(selectedBroker)}
+                              className="w-full py-5 bg-primary/10 text-primary border border-primary/20 font-black uppercase tracking-widest rounded-3xl hover:bg-primary/20 transition-all shadow-lg"
+                           >
+                               Retry Connection
+                           </button>
+                           <button 
+                              onClick={() => setConnectionState('idle')}
+                              className="w-full py-4 bg-white/[0.04] text-zinc-400 font-bold uppercase tracking-widest rounded-3xl hover:bg-white/[0.08] hover:text-white transition-all"
+                           >
+                               Cancel
+                           </button>
                         </div>
                     </div>
                 ) : (
@@ -156,7 +201,7 @@ export default function BrokerLink() {
                         </div>
                         <div>
                             <h3 className="text-4xl font-black text-white">Bridge Active</h3>
-                            <p className="text-zinc-500 text-base mt-4 px-6 leading-relaxed">Your {selectedBroker.name} account is now integrated for Live execution with Nexus AI orchestration.</p>
+                            <p className="text-zinc-500 text-base mt-4 px-6 leading-relaxed">Your {selectedBroker?.name} account is now integrated for Live execution with Nexus AI orchestration.</p>
                         </div>
                         <div className="pt-4 grid grid-cols-2 gap-5">
                              <div className="p-5 bg-white/[0.02] border border-white/[0.04] rounded-3xl text-left">
@@ -165,11 +210,13 @@ export default function BrokerLink() {
                              </div>
                              <div className="p-5 bg-white/[0.02] border border-white/[0.04] rounded-3xl text-left">
                                 <p className="text-[10px] font-black text-zinc-600 uppercase mb-2 tracking-widest">Environment</p>
-                                <p className="text-sm font-bold text-amber-400">PRODUCTION</p>
+                                <p className={`text-sm font-bold ${isSandboxMode ? 'text-orange-400' : 'text-amber-400'}`}>
+                                   {isSandboxMode ? 'SANDBOX (DEMO)' : 'PRODUCTION'}
+                                </p>
                              </div>
                         </div>
                         <button 
-                           onClick={() => { setIsLinked(false); navigate('/portfolio'); }}
+                           onClick={() => { setConnectionState('idle'); navigate('/portfolio'); }}
                            className="w-full mt-6 py-5 bg-primary text-black font-black uppercase tracking-widest rounded-3xl hover:bg-emerald-400 transition-all hover:scale-[1.02] active:scale-[0.98] flex items-center justify-center gap-3 shadow-lg shadow-primary/20"
                         >
                             Open Trading Deck <ArrowRight className="w-6 h-6" />

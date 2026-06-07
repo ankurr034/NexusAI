@@ -6,6 +6,17 @@ import axios from 'axios';
 import { useUser } from '../context/UserContext';
 import { API_BASE_URL } from '../config';
 
+class ErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { hasError: false }; }
+  static getDerivedStateFromError(error) { return { hasError: true }; }
+  render() {
+    if (this.state.hasError) {
+      return <div className="p-8 text-center glass-panel border-rose-500/20"><AlertTriangle className="w-8 h-8 text-rose-400 mx-auto mb-4" /><h3 className="text-white font-bold mb-2">X-Ray Rendering Failed</h3><p className="text-zinc-500 text-sm">Failed to map AI insights to the dashboard. Please try refreshing.</p></div>;
+    }
+    return this.props.children;
+  }
+}
+
 const SEVERITY_COLORS = {
   EXTREME: '#ef4444', HIGH: '#f97316', MODERATE: '#f59e0b', LOW: '#0ea5e9', POSITIVE: '#10b981',
 };
@@ -37,9 +48,20 @@ export default function PortfolioXray() {
     { id: 'rebalance', label: 'Rebalance', icon: <Target size={14} /> },
   ];
 
-  const healthColor = data.health_score > 75 ? '#10b981' : data.health_score > 50 ? '#f59e0b' : '#ef4444';
+  const xrayData = data?.xray || data || {};
+  const healthScore = xrayData?.health_score || 0;
+  const healthColor = healthScore > 75 ? '#10b981' : healthScore > 50 ? '#f59e0b' : '#ef4444';
+  const riskMetrics = xrayData?.risk_metrics || {};
+  const sectorExposure = xrayData?.sector_exposure || [];
+  const riskDecomp = xrayData?.risk_decomposition || [];
+  const holdingsDetail = xrayData?.holdings_detail || [];
+  const stressTests = xrayData?.stress_tests || [];
+  const corrMatrix = xrayData?.correlation_matrix || [];
+  const rebalanceSugg = xrayData?.rebalance_suggestions || [];
+  const concRisk = xrayData?.concentration_risk || { score: 0, top_holding_pct: 0, hhi_index: 0 };
 
   return (
+    <ErrorBoundary>
     <div className="space-y-8">
       {/* Header */}
       <div className="flex items-center justify-between">
@@ -68,21 +90,21 @@ export default function PortfolioXray() {
             <svg className="w-40 h-40 -rotate-90" viewBox="0 0 120 120">
               <circle cx="60" cy="60" r="54" fill="none" stroke="rgba(255,255,255,0.04)" strokeWidth="8" />
               <circle cx="60" cy="60" r="54" fill="none" stroke={healthColor} strokeWidth="8" strokeLinecap="round"
-                strokeDasharray={`${data.health_score * 3.39} 339`} />
+                strokeDasharray={`${healthScore * 3.39} 339`} />
             </svg>
             <div className="absolute inset-0 flex flex-col items-center justify-center">
-              <span className="text-4xl font-black text-white">{data.health_score}</span>
+              <span className="text-4xl font-black text-white">{healthScore}</span>
               <span className="text-[9px] font-black uppercase tracking-[0.2em]" style={{ color: healthColor }}>Health Score</span>
             </div>
           </div>
 
           <div className="flex-1 grid grid-cols-5 gap-4">
             {[
-              { label: 'Portfolio Value', value: `₹${(data.total_value || 0).toLocaleString()}`, color: 'text-white', icon: <BarChart2 size={14} /> },
-              { label: 'Volatility', value: `${data.risk_metrics.volatility}%`, color: data.risk_metrics.volatility > 30 ? 'text-red-400' : 'text-emerald-400', icon: <Activity size={14} /> },
-              { label: 'Beta', value: data.risk_metrics.beta, color: data.risk_metrics.beta > 1.2 ? 'text-amber-400' : 'text-emerald-400', icon: <TrendingUp size={14} /> },
-              { label: 'Sharpe', value: data.risk_metrics.sharpe, color: data.risk_metrics.sharpe > 1 ? 'text-emerald-400' : 'text-amber-400', icon: <Zap size={14} /> },
-              { label: 'VaR (95%)', value: `₹${(data.risk_metrics.var_95 || 0).toLocaleString()}`, color: 'text-rose-400', icon: <AlertTriangle size={14} /> },
+              { label: 'Portfolio Value', value: `₹${(xrayData?.total_value || 0).toLocaleString()}`, color: 'text-white', icon: <BarChart2 size={14} /> },
+              { label: 'Volatility', value: `${riskMetrics?.volatility || 0}%`, color: (riskMetrics?.volatility || 0) > 30 ? 'text-red-400' : 'text-emerald-400', icon: <Activity size={14} /> },
+              { label: 'Beta', value: riskMetrics?.beta || 1.0, color: (riskMetrics?.beta || 1) > 1.2 ? 'text-amber-400' : 'text-emerald-400', icon: <TrendingUp size={14} /> },
+              { label: 'Sharpe', value: riskMetrics?.sharpe || 0, color: (riskMetrics?.sharpe || 0) > 1 ? 'text-emerald-400' : 'text-amber-400', icon: <Zap size={14} /> },
+              { label: 'VaR (95%)', value: `₹${(riskMetrics?.var_95 || 0).toLocaleString()}`, color: 'text-rose-400', icon: <AlertTriangle size={14} /> },
             ].map((m, i) => (
               <div key={i} className="bg-white/[0.03] rounded-2xl p-4 border border-white/[0.04]">
                 <div className="flex items-center gap-2 text-zinc-600 mb-2">{m.icon}<span className="text-[9px] font-black uppercase tracking-widest">{m.label}</span></div>
@@ -115,20 +137,23 @@ export default function PortfolioXray() {
             </h3>
             <ResponsiveContainer width="100%" height={280}>
               <RechartsPie>
-                <Pie data={data.sector_exposure} cx="50%" cy="50%" innerRadius={70} outerRadius={110}
+                <Pie data={sectorExposure} cx="50%" cy="50%" innerRadius={70} outerRadius={110}
                   dataKey="value" paddingAngle={2} strokeWidth={0}>
-                  {data.sector_exposure.map((s, i) => <Cell key={i} fill={s.color} />)}
+                  {sectorExposure.map((s, i) => <Cell key={i} fill={s.color || '#3b82f6'} />)}
                 </Pie>
                 <Tooltip contentStyle={{ background: '#0a0a0f', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 12, fontSize: 12 }}
                   formatter={(v) => `${v}%`} />
               </RechartsPie>
             </ResponsiveContainer>
+            
+            {sectorExposure.length === 0 && <p className="text-xs text-zinc-500 text-center">No sector exposure data.</p>}
+
             <div className="grid grid-cols-2 gap-2 mt-2">
-              {data.sector_exposure.map((s, i) => (
+              {sectorExposure.map((s, i) => (
                 <div key={i} className="flex items-center gap-2 text-xs">
-                  <div className="w-3 h-3 rounded" style={{ background: s.color }} />
-                  <span className="text-zinc-500 flex-1">{s.name}</span>
-                  <span className={`font-black ${s.risk_level === 'HIGH' ? 'text-red-400' : 'text-white'}`}>{s.value}%</span>
+                  <div className="w-3 h-3 rounded" style={{ background: s.color || '#3b82f6' }} />
+                  <span className="text-zinc-500 flex-1">{s.name || 'Unknown'}</span>
+                  <span className={`font-black ${s.risk_level === 'HIGH' ? 'text-red-400' : 'text-white'}`}>{s.value || 0}%</span>
                 </div>
               ))}
             </div>
@@ -140,28 +165,29 @@ export default function PortfolioXray() {
               <Activity size={14} className="text-rose-400" /> Risk Decomposition
             </h3>
             <div className="space-y-4 mt-6">
-              {data.risk_decomposition.map((r, i) => (
+              {riskDecomp.map((r, i) => (
                 <div key={i}>
                   <div className="flex justify-between items-center mb-1.5">
-                    <span className="text-sm font-bold text-zinc-400">{r.factor}</span>
-                    <span className="text-sm font-black font-mono-data" style={{ color: r.color }}>{r.contribution}%</span>
+                    <span className="text-sm font-bold text-zinc-400">{r.factor || 'Factor'}</span>
+                    <span className="text-sm font-black font-mono-data" style={{ color: r.color || '#3b82f6' }}>{r.contribution || 0}%</span>
                   </div>
                   <div className="h-2.5 bg-white/[0.04] rounded-full overflow-hidden">
-                    <motion.div initial={{ width: 0 }} animate={{ width: `${Math.min(100, r.contribution * 2)}%` }}
+                    <motion.div initial={{ width: 0 }} animate={{ width: `${Math.min(100, (r.contribution || 0) * 2)}%` }}
                       transition={{ duration: 0.8, delay: i * 0.1 }}
-                      className="h-full rounded-full" style={{ background: r.color }} />
+                      className="h-full rounded-full" style={{ background: r.color || '#3b82f6' }} />
                   </div>
                 </div>
               ))}
+              {riskDecomp.length === 0 && <p className="text-xs text-zinc-500">Risk decomposition unavailable.</p>}
             </div>
             
             <div className="mt-6 p-4 rounded-xl bg-violet-500/[0.05] border border-violet-500/10">
               <div className="flex items-start gap-3">
                 <Info size={14} className="text-violet-400 mt-0.5 shrink-0" />
                 <p className="text-xs text-zinc-500 leading-relaxed">
-                  <span className="text-violet-400 font-bold">Concentration Score: {data.concentration_risk.score}/100</span> — 
-                  Top holding is {data.concentration_risk.top_holding_pct}% of portfolio. 
-                  HHI Index: {data.concentration_risk.hhi_index} {data.concentration_risk.hhi_index > 2500 ? '(Concentrated)' : '(Diversified)'}.
+                  <span className="text-violet-400 font-bold">Concentration Score: {concRisk.score || 0}/100</span> — 
+                  Top holding is {concRisk.top_holding_pct || 0}% of portfolio. 
+                  HHI Index: {concRisk.hhi_index || 0} {(concRisk.hhi_index || 0) > 2500 ? '(Concentrated)' : '(Diversified)'}.
                 </p>
               </div>
             </div>
@@ -171,8 +197,11 @@ export default function PortfolioXray() {
           <div className="glass-panel overflow-hidden lg:col-span-2">
             <div className="p-5 border-b border-white/[0.04] flex items-center justify-between">
               <h3 className="text-xs font-black text-zinc-500 uppercase tracking-[0.2em]">Holdings Detail</h3>
-              <span className="text-[9px] font-black text-zinc-600 uppercase tracking-widest">{data.holdings_detail.length} Positions</span>
+              <span className="text-[9px] font-black text-zinc-600 uppercase tracking-widest">{holdingsDetail.length} Positions</span>
             </div>
+            {holdingsDetail.length === 0 ? (
+              <div className="p-6 text-center text-xs text-zinc-500">No holdings detail found.</div>
+            ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
@@ -183,7 +212,7 @@ export default function PortfolioXray() {
                   </tr>
                 </thead>
                 <tbody>
-                  {data.holdings_detail.map((h, i) => (
+                  {holdingsDetail.map((h, i) => (
                     <motion.tr key={h.symbol} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: i * 0.03 }}
                       className="border-b border-white/[0.02] hover:bg-white/[0.01] transition-colors">
                       <td className="p-4">
@@ -208,13 +237,14 @@ export default function PortfolioXray() {
                       <td className={`p-4 font-mono-data text-xs font-bold ${h.pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                         {h.pnl >= 0 ? '+' : ''}{h.pnl_pct}%
                       </td>
-                      <td className={`p-4 font-mono-data text-xs font-bold ${h.beta > 1.2 ? 'text-amber-400' : 'text-emerald-400'}`}>{h.beta}</td>
-                      <td className={`p-4 font-mono-data text-xs font-bold ${h.volatility > 35 ? 'text-rose-400' : 'text-emerald-400'}`}>{h.volatility}%</td>
+                      <td className={`p-4 font-mono-data text-xs font-bold ${h.beta > 1.2 ? 'text-amber-400' : 'text-emerald-400'}`}>{h.beta || 1}</td>
+                      <td className={`p-4 font-mono-data text-xs font-bold ${h.volatility > 35 ? 'text-rose-400' : 'text-emerald-400'}`}>{h.volatility || 0}%</td>
                     </motion.tr>
                   ))}
                 </tbody>
               </table>
             </div>
+            )}
           </div>
         </div>
       )}
@@ -233,35 +263,36 @@ export default function PortfolioXray() {
           </div>
           
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {data.stress_tests.map((test, i) => (
+            {stressTests.length === 0 && <p className="text-xs text-zinc-500">No stress tests available.</p>}
+            {stressTests.map((test, i) => (
               <motion.div key={i} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.1 }}
                 className={`glass-panel p-6 relative overflow-hidden border ${
                   test.severity === 'POSITIVE' ? 'border-emerald-500/20' : 'border-white/[0.04]'
                 }`}>
                 <div className="absolute top-0 right-0 w-24 h-24 rounded-full blur-[60px] pointer-events-none"
-                  style={{ background: `${SEVERITY_COLORS[test.severity]}10` }} />
+                  style={{ background: `${SEVERITY_COLORS[test.severity] || '#fff'}10` }} />
                 
                 <div className="relative z-10">
                   <div className="flex items-center gap-2 mb-3">
                     <span className="text-[9px] font-black px-2 py-0.5 rounded-lg uppercase tracking-widest"
-                      style={{ background: `${SEVERITY_COLORS[test.severity]}15`, color: SEVERITY_COLORS[test.severity] }}>
-                      {test.severity}
+                      style={{ background: `${SEVERITY_COLORS[test.severity] || '#fff'}15`, color: SEVERITY_COLORS[test.severity] || '#fff' }}>
+                      {test.severity || 'UNKNOWN'}
                     </span>
                   </div>
-                  <h4 className="text-sm font-bold text-white mb-4">{test.scenario}</h4>
+                  <h4 className="text-sm font-bold text-white mb-4">{test.scenario || 'Scenario'}</h4>
                   
                   <div className="flex items-end gap-3">
                     <div>
                       <p className="text-[10px] text-zinc-600 font-bold uppercase tracking-widest mb-1">Impact</p>
-                      <p className={`text-2xl font-black font-mono-data ${test.impact >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                        {test.impact >= 0 ? '+' : ''}₹{Math.abs(test.impact).toLocaleString()}
+                      <p className={`text-2xl font-black font-mono-data ${(test.impact || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                        {(test.impact || 0) >= 0 ? '+' : ''}₹{Math.abs(test.impact || 0).toLocaleString()}
                       </p>
                     </div>
                     <div className="mb-1">
                       <span className={`text-sm font-black font-mono-data px-2 py-1 rounded-lg ${
-                        test.impact_pct >= 0 ? 'text-emerald-400 bg-emerald-500/10' : 'text-rose-400 bg-rose-500/10'
+                        (test.impact_pct || 0) >= 0 ? 'text-emerald-400 bg-emerald-500/10' : 'text-rose-400 bg-rose-500/10'
                       }`}>
-                        {test.impact_pct >= 0 ? '+' : ''}{test.impact_pct}%
+                        {(test.impact_pct || 0) >= 0 ? '+' : ''}{test.impact_pct || 0}%
                       </span>
                     </div>
                   </div>
@@ -273,25 +304,28 @@ export default function PortfolioXray() {
       )}
 
       {/* Correlation Tab */}
-      {activeTab === 'correlation' && data.correlation_matrix.length > 0 && (
+      {activeTab === 'correlation' && (
         <div className="glass-panel p-6 overflow-x-auto">
           <h3 className="text-xs font-black text-zinc-500 uppercase tracking-[0.2em] mb-4">Correlation Matrix</h3>
           <p className="text-xs text-zinc-600 mb-6">Higher correlation = less diversification benefit. Aim for low or negative correlations between holdings.</p>
           
+          {corrMatrix.length === 0 ? (
+            <p className="text-xs text-zinc-500">Correlation data unavailable.</p>
+          ) : (
           <table className="w-full">
             <thead>
               <tr>
                 <th className="p-3 text-[10px] font-black text-zinc-600 uppercase tracking-widest text-left"></th>
-                {data.correlation_matrix.map(row => (
+                {corrMatrix.map(row => (
                   <th key={row.symbol} className="p-3 text-[10px] font-black text-zinc-400 uppercase tracking-widest">{row.symbol}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {data.correlation_matrix.map((row, ri) => (
+              {corrMatrix.map((row, ri) => (
                 <tr key={row.symbol}>
                   <td className="p-3 text-xs font-bold text-zinc-400">{row.symbol}</td>
-                  {data.correlation_matrix.map((col, ci) => {
+                  {corrMatrix.map((col, ci) => {
                     const val = row[col.symbol];
                     const bg = val === 1 ? 'bg-white/[0.04]' :
                       val > 0.5 ? 'bg-red-500/10' : val > 0.3 ? 'bg-amber-500/10' : 'bg-emerald-500/10';
@@ -307,13 +341,14 @@ export default function PortfolioXray() {
               ))}
             </tbody>
           </table>
+          )}
         </div>
       )}
 
       {/* Rebalance Tab */}
       {activeTab === 'rebalance' && (
         <div className="space-y-4">
-          {data.rebalance_suggestions.length > 0 ? data.rebalance_suggestions.map((s, i) => (
+          {rebalanceSugg.length > 0 ? rebalanceSugg.map((s, i) => (
             <motion.div key={i} initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.1 }}
               className={`glass-panel p-6 border-l-4 ${
                 s.urgency === 'HIGH' ? 'border-l-rose-500' : s.urgency === 'MEDIUM' ? 'border-l-amber-500' : 'border-l-blue-500'
@@ -352,5 +387,6 @@ export default function PortfolioXray() {
         </div>
       )}
     </div>
+    </ErrorBoundary>
   );
 }

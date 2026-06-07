@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import { Wallet as WalletIcon, ArrowUpRight, ArrowDownLeft, History, RefreshCw, Trophy, ShieldCheck, AlertCircle, Sparkles, User as UserIcon, ShieldAlert } from 'lucide-react';
 import { useToast } from '../components/Toast';
 import { useUser } from '../context/UserContext';
+import { useWeb3 } from '../context/Web3Context';
 import axios from 'axios';
 import { Link } from 'react-router-dom';
 import PaymentPortal from '../components/PaymentPortal';
@@ -11,6 +12,7 @@ import { API_BASE_URL } from '../config';
 export default function Wallet() {
   const toast = useToast();
   const { user, isLiveMode, refreshUser } = useUser();
+  const { account, connectWallet, disconnectWallet, isConnecting } = useWeb3();
   const [balance, setBalance] = useState(0);
   const [loading, setLoading] = useState(false);
   const [amount, setAmount] = useState('');
@@ -154,6 +156,34 @@ export default function Wallet() {
                 ? 'Managing real capital for trade execution via broker APIs. All credits represent withdrawable funds.' 
                 : 'Zero-risk educational simulation. Use your demo credits to learn market dynamics and strategy execution.'}
             </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Web3 Wallet Card */}
+      <div className="glass-panel p-8">
+        <div className="flex flex-col md:flex-row items-center justify-between gap-6">
+          <div className="flex items-center gap-4">
+            <div className={`w-12 h-12 rounded-xl flex items-center justify-center border ${account ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-orange-500/10 border-orange-500/20 text-orange-400'}`}>
+              <ShieldCheck className="w-6 h-6" />
+            </div>
+            <div>
+              <h2 className="text-xl font-bold text-white">Web3 Authentication</h2>
+              <p className="text-sm text-zinc-400">
+                {account ? `Connected: ${account.substring(0, 6)}...${account.substring(account.length - 4)}` : 'Link your MetaMask wallet to access blockchain features.'}
+              </p>
+            </div>
+          </div>
+          <div>
+            {account ? (
+              <button onClick={disconnectWallet} className="px-6 py-3 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 font-bold rounded-xl transition-all">
+                Disconnect Wallet
+              </button>
+            ) : (
+              <button onClick={connectWallet} disabled={isConnecting} className="px-6 py-3 bg-gradient-to-r from-orange-400 to-amber-500 hover:shadow-lg hover:shadow-orange-500/20 text-black font-bold rounded-xl transition-all disabled:opacity-50 flex items-center gap-2">
+                {isConnecting ? <RefreshCw className="w-5 h-5 animate-spin" /> : 'Connect MetaMask'}
+              </button>
+            )}
           </div>
         </div>
       </div>

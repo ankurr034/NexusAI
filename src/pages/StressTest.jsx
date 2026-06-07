@@ -6,7 +6,16 @@ import { useUser } from '../context/UserContext';
 import { API_BASE_URL } from '../config';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, RadialBarChart, RadialBar } from 'recharts';
 
-const fadeUp = { hidden: { opacity: 0, y: 20 }, show: { opacity: 1, y: 0, transition: { duration: 0.5 } } };
+class ErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { hasError: false }; }
+  static getDerivedStateFromError(error) { return { hasError: true }; }
+  render() {
+    if (this.state.hasError) {
+      return <div className="p-8 text-center glass-panel border-rose-500/20"><AlertTriangle className="w-8 h-8 text-rose-400 mx-auto mb-4" /><h3 className="text-white font-bold mb-2">Simulation Rendering Failed</h3><p className="text-zinc-500 text-sm">Our AI engine encountered an unexpected data structure. Please try refreshing.</p></div>;
+    }
+    return this.props.children;
+  }
+}
 
 export default function StressTest() {
   const [data, setData] = useState(null);
@@ -33,10 +42,16 @@ export default function StressTest() {
 
   if (!data) return null;
 
-  const resilienceColor = data.resilience_score > 70 ? 'emerald' : data.resilience_score > 40 ? 'amber' : 'red';
+  const testData = data?.stress_test || data || {};
+  const resilienceScore = testData?.survival_probability || testData?.resilience_score || 0;
+  const resilienceColor = resilienceScore > 70 ? 'emerald' : resilienceScore > 40 ? 'amber' : 'red';
+  const riskMetrics = testData?.risk_metrics || {};
+  const scenarios = testData?.scenarios || [];
+  const monteCarlo = testData?.monte_carlo || [];
 
   return (
-    <motion.div variants={fadeUp} initial="hidden" animate="show" className="space-y-8">
+    <ErrorBoundary>
+    <motion.div variants={{ hidden: { opacity: 0, y: 20 }, show: { opacity: 1, y: 0, transition: { duration: 0.5 } } }} initial="hidden" animate="show" className="space-y-8">
       {/* Header */}
       <div className="relative overflow-hidden rounded-[28px] border border-white/[0.06] bg-gradient-to-br from-[#120508] via-surface to-surface p-8 md:p-12">
         <div className="absolute top-0 right-0 w-[400px] h-[400px] bg-rose-500/10 rounded-full blur-[150px] pointer-events-none" />
@@ -51,11 +66,22 @@ export default function StressTest() {
             </div>
           </div>
           <div className="text-right">
-            <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest mb-1">Portfolio Value</p>
-            <p className="text-2xl font-black text-white font-mono-data">₹{data.portfolio_value?.toLocaleString()}</p>
+            <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest mb-1">Portfolio Risk Score</p>
+            <p className="text-2xl font-black text-white font-mono-data">{testData?.portfolio_risk || 0}/100</p>
           </div>
         </div>
       </div>
+
+      {/* AI Summary Banner */}
+      {testData?.ai_summary && (
+        <div className="glass-panel p-5 bg-rose-500/[0.05] border-rose-500/20 flex items-start gap-4">
+          <Zap className="w-5 h-5 text-rose-400 mt-0.5 shrink-0" />
+          <div>
+            <h4 className="text-sm font-black text-white mb-1">AI Risk Assessment</h4>
+            <p className="text-sm text-zinc-400 leading-relaxed">{testData.ai_summary}</p>
+          </div>
+        </div>
+      )}
 
       {/* Resilience Score + Risk Metrics */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -65,18 +91,18 @@ export default function StressTest() {
           <div className="relative w-40 h-40">
             <svg viewBox="0 0 100 100" className="w-full h-full -rotate-90">
               <circle cx="50" cy="50" r="42" fill="none" stroke="#ffffff08" strokeWidth="8" />
-              <circle cx="50" cy="50" r="42" fill="none" stroke={`var(--color-${resilienceColor}-400)`}
+              <circle cx="50" cy="50" r="42" fill="none" stroke={`var(--color-${resilienceColor}-400, #f43f5e)`}
                 strokeWidth="8" strokeLinecap="round"
-                strokeDasharray={`${data.resilience_score * 2.64} 264`}
+                strokeDasharray={`${resilienceScore * 2.64} 264`}
                 className="transition-all duration-1000" />
             </svg>
             <div className="absolute inset-0 flex flex-col items-center justify-center">
-              <span className={`text-4xl font-black text-${resilienceColor}-400`}>{data.resilience_score}</span>
+              <span className={`text-4xl font-black text-${resilienceColor}-400`}>{resilienceScore}</span>
               <span className="text-[9px] font-black text-zinc-600 uppercase tracking-widest">/100</span>
             </div>
           </div>
           <p className={`text-xs font-black uppercase tracking-widest mt-4 text-${resilienceColor}-400`}>
-            {data.resilience_score > 70 ? 'STRONG' : data.resilience_score > 40 ? 'MODERATE' : 'VULNERABLE'}
+            {resilienceScore > 70 ? 'STRONG' : resilienceScore > 40 ? 'MODERATE' : 'VULNERABLE'}
           </p>
         </div>
 
@@ -87,12 +113,12 @@ export default function StressTest() {
           </h3>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             {[
-              { label: 'VaR (95%) 1-Day', value: `₹${data.risk_metrics?.var_95_1day?.toLocaleString()}`, desc: 'Max expected daily loss' },
-              { label: 'VaR (99%) 1-Day', value: `₹${data.risk_metrics?.var_99_1day?.toLocaleString()}`, desc: 'Extreme daily loss' },
-              { label: 'Expected Shortfall', value: `₹${data.risk_metrics?.expected_shortfall?.toLocaleString()}`, desc: 'Avg loss beyond VaR' },
-              { label: 'Portfolio Beta', value: data.risk_metrics?.beta, desc: 'Market sensitivity' },
-              { label: 'Volatility', value: `${data.risk_metrics?.portfolio_volatility}%`, desc: 'Annualized' },
-              { label: 'Max 1-Day Loss', value: `₹${data.risk_metrics?.max_1day_loss?.toLocaleString()}`, desc: 'Worst case estimate' },
+              { label: 'Max Drawdown', value: `${testData?.max_drawdown || 0}%`, desc: 'Estimated worst drop' },
+              { label: 'Volatility Score', value: `${testData?.volatility_score || 0}/100`, desc: 'Market sensitivity' },
+              { label: 'VaR (95%) 1-Day', value: `₹${(riskMetrics?.var_95_1day || 0).toLocaleString()}`, desc: 'Max expected daily loss' },
+              { label: 'Portfolio Beta', value: riskMetrics?.beta || 1.0, desc: 'Market correlation' },
+              { label: 'Crash Impact', value: `${testData?.crash_impact || 0}%`, desc: 'Systemic risk est.' },
+              { label: 'Expected Shortfall', value: `₹${(riskMetrics?.expected_shortfall || 0).toLocaleString()}`, desc: 'Avg loss beyond VaR' },
             ].map((m, i) => (
               <div key={i} className="p-4 rounded-xl bg-white/[0.02] border border-white/[0.04]">
                 <p className="text-[9px] font-black text-zinc-600 uppercase tracking-widest mb-2">{m.label}</p>
@@ -109,8 +135,13 @@ export default function StressTest() {
         <h3 className="text-xs font-black text-white uppercase tracking-widest mb-6 flex items-center gap-2">
           <AlertTriangle className="w-4 h-4 text-amber-400" /> Historical Crash Scenarios
         </h3>
+        
+        {scenarios.length === 0 && (
+           <p className="text-xs text-zinc-500">No crash scenarios generated.</p>
+        )}
+
         <div className="space-y-3">
-          {data.scenarios?.map((scenario, i) => (
+          {scenarios.map((scenario, i) => (
             <div key={i} className="border border-white/[0.04] rounded-2xl overflow-hidden hover:border-white/[0.08] transition-all">
               <button
                 onClick={() => setExpandedScenario(expandedScenario === i ? null : i)}
@@ -151,13 +182,16 @@ export default function StressTest() {
                         {scenario.stock_impacts?.map((s, j) => (
                           <div key={j} className="p-3 rounded-xl bg-white/[0.02] border border-white/[0.04]">
                             <div className="flex items-center justify-between mb-2">
-                              <span className="text-xs font-black text-white">{s.symbol}</span>
-                              <span className="text-[9px] font-bold text-zinc-500">{s.sector}</span>
+                              <span className="text-xs font-black text-white">{s.symbol || 'SYM'}</span>
+                              <span className="text-[9px] font-bold text-zinc-500">{s.sector || 'N/A'}</span>
                             </div>
-                            <p className="text-sm font-black text-red-400 font-mono-data">{s.impact_pct}%</p>
-                            <p className="text-[9px] text-zinc-600 font-bold">₹{Math.abs(s.impact_value)?.toLocaleString()} loss</p>
+                            <p className="text-sm font-black text-red-400 font-mono-data">{s.impact_pct || 0}%</p>
+                            <p className="text-[9px] text-zinc-600 font-bold">₹{Math.abs(s.impact_value || 0)?.toLocaleString()} loss</p>
                           </div>
                         ))}
+                        {(!scenario.stock_impacts || scenario.stock_impacts.length === 0) && (
+                          <p className="text-xs text-zinc-500 col-span-2">No detailed stock impact data provided.</p>
+                        )}
                       </div>
                       <div className="flex items-center gap-4 mt-4 p-3 rounded-xl bg-amber-500/5 border border-amber-500/10">
                         <Zap className="w-4 h-4 text-amber-400 shrink-0" />
@@ -179,12 +213,19 @@ export default function StressTest() {
         <h3 className="text-xs font-black text-white uppercase tracking-widest mb-6 flex items-center gap-2">
           <BarChart2 className="w-4 h-4 text-violet-400" /> Monte Carlo Projection (1 Year)
         </h3>
-        <div className="h-[300px]">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={data.monte_carlo} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#ffffff08" vertical={false} />
-              <XAxis dataKey="percentile" stroke="#52525b" tick={{ fill: '#71717a', fontSize: 11 }} tickFormatter={v => `${v}th`} />
-              <YAxis stroke="#52525b" tick={{ fill: '#71717a', fontSize: 10 }} tickFormatter={v => `₹${(v/100000).toFixed(1)}L`} />
+        
+        {monteCarlo.length === 0 && (
+           <p className="text-xs text-zinc-500 mb-4">Monte Carlo projections unavailable.</p>
+        )}
+
+        {monteCarlo.length > 0 && (
+          <>
+            <div className="h-[300px]">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={monteCarlo} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#ffffff08" vertical={false} />
+                  <XAxis dataKey="percentile" stroke="#52525b" tick={{ fill: '#71717a', fontSize: 11 }} tickFormatter={v => `${v}th`} />
+                  <YAxis stroke="#52525b" tick={{ fill: '#71717a', fontSize: 10 }} tickFormatter={v => `₹${(v/100000).toFixed(1)}L`} />
               <Tooltip content={({ active, payload }) => {
                 if (active && payload && payload.length) {
                   const d = payload[0].payload;
@@ -199,17 +240,20 @@ export default function StressTest() {
                 return null;
               }} />
               <Bar dataKey="projected_value" radius={[6, 6, 0, 0]}>
-                {data.monte_carlo?.map((entry, index) => (
+                {monteCarlo?.map((entry, index) => (
                   <Cell key={index} fill={entry.return_pct >= 0 ? '#10b981' : '#ef4444'} fillOpacity={0.6 + (index * 0.05)} />
                 ))}
               </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-        <p className="text-[10px] text-zinc-600 font-bold text-center mt-3">
-          Based on Monte Carlo simulation with {data.holdings_count} holdings. Lower percentiles = worst case scenarios.
-        </p>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+          <p className="text-[10px] text-zinc-600 font-bold text-center mt-3">
+            Based on Monte Carlo simulation. Lower percentiles = worst case scenarios.
+          </p>
+        </>
+        )}
       </div>
     </motion.div>
+    </ErrorBoundary>
   );
 }

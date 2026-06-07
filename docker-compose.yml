@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  nexus-app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - NODE_ENV=production
+      - PORT=8000
+      - MONGODB_URI=mongodb://mongodb:27017/nexusai
+      - JWT_SECRET=nexusai_super_secret_production_key
+      - RAZORPAY_KEY_ID=${RAZORPAY_KEY_ID}
+      - RAZORPAY_KEY_SECRET=${RAZORPAY_KEY_SECRET}
+    depends_on:
+      - mongodb
+    restart: unless-stopped
+
+  mongodb:
+    image: mongo:6.0
+    ports:
+      - "27017:27017"
+    volumes:
+      - nexus-data:/data/db
+    restart: unless-stopped
+
+volumes:
+  nexus-data:

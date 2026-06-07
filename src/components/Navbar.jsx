@@ -4,12 +4,15 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import axios from 'axios';
 import { useUser } from '../context/UserContext';
+import { useToast } from './Toast';
 import { API_BASE_URL } from '../config';
+import { getDisplayName, getAvatarInitials } from '../utils/identity';
 
 export default function Navbar() {
   const location = useLocation();
   const navigate = useNavigate();
   const { user, profile, isLiveMode, toggleMode, logout } = useUser();
+  const toast = useToast();
   
   const [search, setSearch] = useState('');
   const [isFocused, setIsFocused] = useState(false);
@@ -89,6 +92,19 @@ export default function Navbar() {
     }
   };
 
+  const [switchingMode, setSwitchingMode] = useState(false);
+  const handleToggleMode = async () => {
+    if (switchingMode) return;
+    setSwitchingMode(true);
+    const result = await toggleMode();
+    if (result && result.success) {
+      toast.success(`Switched to ${!isLiveMode ? 'Live Trading' : 'Demo Mode'} successfully`);
+    } else {
+      toast.error(result?.error || 'Failed to switch mode');
+    }
+    setSwitchingMode(false);
+  };
+
   const navLinks = useMemo(() => [
     { path: '/', label: 'Explore' },
     { path: '/copilot', label: '🤖 AI Copilot' },
@@ -166,8 +182,10 @@ export default function Navbar() {
               {/* Mode Toggle Button */}
               {user && (
                 <button 
-                  onClick={toggleMode}
+                  onClick={handleToggleMode}
+                  disabled={switchingMode}
                   className={`hidden lg:flex items-center gap-2 px-3 py-1.5 border rounded-full mr-2 transition-all group overflow-hidden relative
+                    ${switchingMode ? 'opacity-50 cursor-not-allowed' : ''}
                     ${isLiveMode 
                       ? 'bg-rose-500/10 border-rose-500/20 text-rose-400 hover:bg-rose-500/20' 
                       : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400 hover:bg-emerald-500/20'
@@ -175,7 +193,7 @@ export default function Navbar() {
                 >
                   <div className={`w-1.5 h-1.5 rounded-full animate-pulse ${isLiveMode ? 'bg-rose-500' : 'bg-emerald-500'}`} />
                   <span className="text-[10px] font-black uppercase tracking-widest">
-                    {isLiveMode ? 'LIVE TRADING' : 'DEMO MODE'}
+                    {switchingMode ? 'SWITCHING...' : (isLiveMode ? 'LIVE TRADING' : 'DEMO MODE')}
                   </span>
                   <div className="absolute inset-0 bg-white/5 opacity-0 group-hover:opacity-100 transition-opacity" />
                 </button>
@@ -251,10 +269,10 @@ export default function Navbar() {
                     className="flex items-center gap-1.5 sm:gap-2 ml-1 p-1 sm:pr-3 bg-white/[0.04] border border-white/[0.06] rounded-xl cursor-pointer hover:bg-white/[0.06] transition-all"
                   >
                     <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary/20 to-secondary/20 border border-white/10 flex items-center justify-center">
-                      <User className="w-4 h-4 text-zinc-300" />
+                      <span className="text-[10px] font-black text-white tracking-widest">{getAvatarInitials(user)}</span>
                     </div>
-                    <div className="hidden sm:flex flex-col text-left">
-                      <span className="text-xs font-bold text-white leading-none mb-0.5 whitespace-nowrap">{user.full_name || user.username}</span>
+                    <div className="hidden sm:flex flex-col text-left overflow-hidden max-w-[120px]">
+                      <span className="text-xs font-bold text-white leading-none mb-0.5 truncate">{getDisplayName(user)}</span>
                       <span className="text-[9px] font-bold text-primary uppercase tracking-widest leading-none">{user.account_type || 'Free'}</span>
                     </div>
                     <ChevronDown className={`hidden sm:block w-3.5 h-3.5 text-zinc-500 ml-1 transition-transform ${profileOpen ? 'rotate-180' : ''}`} />
@@ -285,12 +303,15 @@ export default function Navbar() {
                         <div className="h-px bg-white/[0.04] my-1" />
 
                         <button 
-                          onClick={toggleMode}
-                          className="w-full flex items-center justify-between px-4 py-3 text-sm transition-all hover:bg-white/[0.04]"
+                          onClick={handleToggleMode}
+                          disabled={switchingMode}
+                          className={`w-full flex items-center justify-between px-4 py-3 text-sm transition-all hover:bg-white/[0.04] ${switchingMode ? 'opacity-50' : ''}`}
                         >
                           <div className="flex items-center gap-3 text-zinc-400">
                             {isLiveMode ? <ShieldAlert size={16} className="text-rose-500" /> : <Shield size={16} className="text-emerald-500" />}
-                            <span className={isLiveMode ? "text-rose-400" : "text-emerald-400"}>{isLiveMode ? 'Switch to Demo' : 'Switch to Live'}</span>
+                            <span className={isLiveMode ? "text-rose-400" : "text-emerald-400"}>
+                               {switchingMode ? 'Switching...' : (isLiveMode ? 'Switch to Demo' : 'Switch to Live')}
+                            </span>
                           </div>
                           <div className={`w-8 h-4 rounded-full relative transition-colors ${isLiveMode ? 'bg-rose-500/20' : 'bg-emerald-500/20'}`}>
                             <div className={`absolute top-1 w-2 h-2 rounded-full transition-all ${isLiveMode ? 'right-1 bg-rose-500' : 'left-1 bg-emerald-500'}`} />
@@ -381,8 +402,10 @@ export default function Navbar() {
               {/* Mode toggle for mobile */}
               {user && (
                 <button 
-                  onClick={toggleMode}
+                  onClick={handleToggleMode}
+                  disabled={switchingMode}
                   className={`w-full flex items-center justify-center gap-2 px-4 py-3 border rounded-xl mb-3 transition-all
+                    ${switchingMode ? 'opacity-50' : ''}
                     ${isLiveMode 
                       ? 'bg-rose-500/10 border-rose-500/20 text-rose-400' 
                       : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
@@ -390,7 +413,7 @@ export default function Navbar() {
                 >
                   <div className={`w-1.5 h-1.5 rounded-full animate-pulse ${isLiveMode ? 'bg-rose-500' : 'bg-emerald-500'}`} />
                   <span className="text-[10px] font-black uppercase tracking-widest">
-                    {isLiveMode ? 'LIVE TRADING' : 'DEMO MODE'}
+                    {switchingMode ? 'SWITCHING...' : (isLiveMode ? 'LIVE TRADING' : 'DEMO MODE')}
                   </span>
                 </button>
               )}

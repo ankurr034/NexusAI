@@ -6,13 +6,26 @@ import axios from 'axios';
 import { useUser } from '../context/UserContext';
 import { useToast } from '../components/Toast';
 import { API_BASE_URL } from '../config';
+import BillingTab from '../components/BillingTab';
+import { getDisplayName, getAvatarInitials, shortenWallet } from '../utils/identity';
 
 export default function Profile() {
   const { user, profile: contextProfile, logout, refreshUser } = useUser();
   const [profileData, setProfileData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState('overview');
+  const [copied, setCopied] = useState(false);
   const toast = useToast();
   const navigate = useNavigate();
+
+  const handleCopyWallet = () => {
+    if (user?.walletAddress) {
+      navigator.clipboard.writeText(user.walletAddress);
+      setCopied(true);
+      toast.success('Wallet address copied to clipboard');
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
 
   useEffect(() => {
     const fetchProfile = async () => {
@@ -57,7 +70,9 @@ export default function Profile() {
                    {userDetails.avatar_url ? (
                      <img src={userDetails.avatar_url} alt="Profile" className="w-full h-full object-cover" />
                    ) : (
-                     <User className="w-16 h-16 text-primary/40" />
+                     <span className="text-4xl sm:text-5xl md:text-6xl font-black text-primary/80 uppercase tracking-tighter">
+                       {getAvatarInitials(userDetails)}
+                     </span>
                    )}
                 </div>
               </div>
@@ -72,35 +87,73 @@ export default function Profile() {
           <div className="text-center md:text-left space-y-6 flex-1">
             <div className="space-y-1">
               <div className="flex flex-wrap items-center justify-center md:justify-start gap-4">
-                <h1 className="text-4xl font-black text-white tracking-tight">{userDetails.full_name || userDetails.username}</h1>
+                <h1 className="text-4xl font-black text-white tracking-tight">{getDisplayName(userDetails)}</h1>
                 <div className={`px-3 py-1 rounded-full border text-[10px] font-black uppercase tracking-[0.2em] flex items-center gap-2 ${isKycVerified ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-amber-500/10 border-amber-500/20 text-amber-500'}`}>
                    {isKycVerified ? <CheckCircle2 size={12} /> : <AlertCircle size={12} />}
                    {userDetails.kyc_status}
                 </div>
               </div>
-              <p className="text-zinc-500 font-bold uppercase tracking-[0.3em] text-[11px]">{userDetails.account_type} Trading Member • ID: {userDetails.id.toString().padStart(6, '0')}</p>
+              <p className="text-zinc-500 font-bold uppercase tracking-[0.3em] text-[11px]">{userDetails.account_type || 'Retail'} Trading Member • ID: {userDetails.id?.toString().padStart(6, '0') || 'N/A'}</p>
             </div>
 
             <div className="flex flex-wrap justify-center md:justify-start gap-3">
-              <div className="flex items-center gap-3 px-5 py-2.5 bg-white/[0.03] border border-white/[0.06] rounded-2xl group hover:bg-white/[0.06] transition-all">
-                <Mail className="w-4 h-4 text-zinc-500 group-hover:text-primary transition-colors" />
-                <span className="text-sm font-bold text-zinc-300">{userDetails.email}</span>
-              </div>
-              <div className="flex items-center gap-3 px-5 py-2.5 bg-white/[0.03] border border-white/[0.06] rounded-2xl group hover:bg-white/[0.06] transition-all">
-                <Phone className="w-4 h-4 text-zinc-500 group-hover:text-primary transition-colors" />
-                <span className="text-sm font-bold text-zinc-300">{userDetails.phone || 'No phone linked'}</span>
-              </div>
+              {(userDetails.email || userDetails.phone) ? (
+                <>
+                  {userDetails.email && (
+                    <div className="flex items-center gap-3 px-5 py-2.5 bg-white/[0.03] border border-white/[0.06] rounded-2xl group hover:bg-white/[0.06] transition-all">
+                      <Mail className="w-4 h-4 text-zinc-500 group-hover:text-primary transition-colors" />
+                      <span className="text-sm font-bold text-zinc-300">{userDetails.email}</span>
+                    </div>
+                  )}
+                  {userDetails.phone && (
+                    <div className="flex items-center gap-3 px-5 py-2.5 bg-white/[0.03] border border-white/[0.06] rounded-2xl group hover:bg-white/[0.06] transition-all">
+                      <Phone className="w-4 h-4 text-zinc-500 group-hover:text-primary transition-colors" />
+                      <span className="text-sm font-bold text-zinc-300">{userDetails.phone}</span>
+                    </div>
+                  )}
+                </>
+              ) : userDetails.walletAddress ? (
+                <button 
+                  onClick={handleCopyWallet}
+                  className="flex items-center gap-3 px-5 py-2.5 bg-primary/10 border border-primary/20 rounded-2xl group hover:bg-primary/20 transition-all text-primary"
+                >
+                  <Activity className="w-4 h-4 text-primary group-hover:animate-pulse" />
+                  <span className="text-sm font-bold font-mono-data tracking-wider">
+                    Connected: {shortenWallet(userDetails.walletAddress)}
+                  </span>
+                  {copied ? <CheckCircle2 className="w-4 h-4 ml-1" /> : <ChevronRight className="w-4 h-4 opacity-50 ml-1 group-hover:opacity-100 group-hover:translate-x-1 transition-all" />}
+                </button>
+              ) : null}
+              
               <div className="flex items-center gap-3 px-5 py-2.5 bg-white/[0.03] border border-white/[0.06] rounded-2xl">
                 <Calendar className="w-4 h-4 text-zinc-600" />
-                <span className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Joined {new Date(userDetails.created_at).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}</span>
+                <span className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">
+                  Joined {userDetails.created_at ? new Date(userDetails.created_at).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' }) : 'Recently'}
+                </span>
               </div>
             </div>
           </div>
         </div>
       </div>
 
-      {/* KYC & Verification Details */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 sm:gap-8">
+      {/* Tabs Navigation */}
+      <div className="flex items-center gap-4 border-b border-white/[0.06] mb-8 pb-4">
+        <button 
+          onClick={() => setActiveTab('overview')} 
+          className={`px-4 py-2 text-sm font-bold uppercase tracking-widest rounded-xl transition-all ${activeTab === 'overview' ? 'bg-primary/10 text-primary border border-primary/20' : 'text-zinc-500 hover:text-white'}`}
+        >
+          Overview
+        </button>
+        <button 
+          onClick={() => setActiveTab('billing')} 
+          className={`px-4 py-2 text-sm font-bold uppercase tracking-widest rounded-xl transition-all ${activeTab === 'billing' ? 'bg-amber-500/10 text-amber-500 border border-amber-500/20' : 'text-zinc-500 hover:text-white'}`}
+        >
+          Billing & Subscription
+        </button>
+      </div>
+
+      {activeTab === 'overview' ? (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 sm:gap-8">
          <div className="lg:col-span-2 space-y-8">
             <div className="glass-panel p-10 relative overflow-hidden group">
                <div className="absolute top-0 right-0 w-40 h-40 bg-primary/5 rounded-full blur-[60px] group-hover:bg-primary/10 transition-all" />
@@ -234,6 +287,9 @@ export default function Profile() {
             </button>
          </div>
       </div>
+      ) : (
+        <BillingTab />
+      )}
     </motion.div>
   );
 }

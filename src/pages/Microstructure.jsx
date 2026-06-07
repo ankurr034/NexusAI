@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import { Activity, Search, Zap, ArrowUpRight, ArrowDownRight, BarChart2, Eye, RefreshCw, AlertTriangle, Layers } from 'lucide-react';
 import axios from 'axios';
 import { API_BASE_URL } from '../config';
+import useSocket from '../hooks/useSocket';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, BarChart, Bar, Cell } from 'recharts';
 
 const fadeUp = { hidden: { opacity: 0, y: 20 }, show: { opacity: 1, y: 0, transition: { duration: 0.5 } } };
@@ -12,6 +13,7 @@ export default function Microstructure() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [searchInput, setSearchInput] = useState('RELIANCE');
+  const { socket, isConnected, data: socketData } = useSocket('microstructure_update');
 
   const fetchData = (sym) => {
     setLoading(true);
@@ -21,7 +23,30 @@ export default function Microstructure() {
       .finally(() => setLoading(false));
   };
 
-  useEffect(() => { fetchData('RELIANCE'); }, []);
+  useEffect(() => { 
+    fetchData('RELIANCE'); 
+  }, []);
+
+  useEffect(() => {
+    if (socket && isConnected && symbol) {
+      socket.emit('subscribe_microstructure', symbol);
+    }
+  }, [socket, isConnected, symbol]);
+
+  useEffect(() => {
+    if (socketData && socketData.symbol === symbol) {
+      setData(prev => {
+        if (!prev) return prev;
+        const newTape = [socketData.new_trade, ...prev.trade_tape].slice(0, 50);
+        return {
+          ...prev,
+          current_price: socketData.current_price,
+          order_book: socketData.order_book,
+          trade_tape: newTape
+        };
+      });
+    }
+  }, [socketData, symbol]);
 
   const handleSearch = (e) => {
     e.preventDefault();

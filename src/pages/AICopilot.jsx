@@ -53,16 +53,40 @@ export default function AICopilot() {
         message: text,
       });
 
+      const copilotResponse = res.data;
+      let txHash = null;
+      let blockHash = null;
+
+      try {
+        // Log prediction to blockchain
+        if (copilotResponse.symbol) {
+          const logRes = await axios.post(`${API_BASE_URL}/api/predictions/log`, {
+            ticker: copilotResponse.symbol,
+            predictionText: copilotResponse.body,
+            targetPrice: copilotResponse.price,
+            timeframe: 'short-term'
+          });
+          if (logRes.data.success) {
+            txHash = logRes.data.txHash;
+            blockHash = logRes.data.hash;
+          }
+        }
+      } catch (logErr) {
+        console.error("Blockchain logging failed", logErr);
+      }
+
       const aiMsg = {
         role: 'assistant',
-        title: res.data.title,
-        verdict: res.data.verdict,
-        body: res.data.body,
-        symbol: res.data.symbol,
-        price: res.data.price,
-        change_pct: res.data.change_pct,
-        confidence: res.data.confidence,
+        title: copilotResponse.title,
+        verdict: copilotResponse.verdict,
+        body: copilotResponse.body,
+        symbol: copilotResponse.symbol,
+        price: copilotResponse.price,
+        change_pct: copilotResponse.change_pct,
+        confidence: copilotResponse.confidence,
         timestamp: new Date().toLocaleTimeString(),
+        txHash,
+        blockHash
       };
       setMessages(prev => [...prev, aiMsg]);
     } catch (err) {
@@ -220,6 +244,12 @@ export default function AICopilot() {
 
                         <div className="px-5 py-2 border-t border-white/[0.04]">
                           <p className="text-[9px] text-zinc-600">{msg.timestamp} • AI-generated analysis for educational purposes only</p>
+                          {msg.blockHash && (
+                            <div className="mt-2 flex items-center gap-1.5 bg-primary/10 border border-primary/20 px-2 py-1 rounded w-fit">
+                              <Shield size={10} className="text-primary" />
+                              <span className="text-[9px] text-primary font-bold">Blockchain Verified: {msg.blockHash.substring(0, 10)}...</span>
+                            </div>
+                          )}
                         </div>
                       </div>
                     </div>
