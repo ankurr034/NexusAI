@@ -1,7 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
 import { API_BASE_URL } from '../config';
-import { reconnectSocket } from '../hooks/useSocket';
 
 const UserContext = createContext();
 
@@ -168,7 +167,7 @@ export const UserProvider = ({ children }) => {
       if (user) {
         setUser({ ...user, account_mode: newMode });
       }
-      reconnectSocket();
+      window.dispatchEvent(new Event('broker_token_updated'));
       return { success: true };
     } catch (err) {
       console.warn('Backend failed to switch mode, falling back to local state:', err);
@@ -178,7 +177,7 @@ export const UserProvider = ({ children }) => {
       if (user) {
         setUser({ ...user, account_mode: newMode });
       }
-      reconnectSocket();
+      window.dispatchEvent(new Event('broker_token_updated'));
       return { success: true };
     }
   };

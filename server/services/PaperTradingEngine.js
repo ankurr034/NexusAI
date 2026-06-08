@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import { PaperAccount, PaperPosition, PaperOrder, RiskEvent } from '../models/PaperTrading.js';
+import MarketSession from '../utils/MarketSession.js';
 
 class PaperTradingEngine {
   constructor() {
@@ -60,6 +61,12 @@ class PaperTradingEngine {
     
     if (this.killSwitchEngaged) {
        throw new Error("Paper Simulator Kill-Switch Engaged. All execution halted.");
+    }
+
+    const session = MarketSession.getSessionStatus();
+    if (!session.isMarketOpen) {
+       this.triggerRiskEvent(userId, 'MARKET_CLOSED', `Order rejected. Market is currently ${session.status}.`);
+       throw new Error(`PaperTrading Safety: Market is currently ${session.status}. Cannot execute order.`);
     }
 
     await this.loadUserContext(userId);

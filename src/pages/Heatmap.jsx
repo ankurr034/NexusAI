@@ -3,7 +3,7 @@ import { motion } from 'framer-motion';
 import { Flame, RefreshCw, BarChart3, TrendingUp, TrendingDown, Activity, Zap } from 'lucide-react';
 import axios from 'axios';
 import { API_BASE_URL } from '../config';
-import { useSocket } from '../hooks/useSocket';
+import useSocket from '../hooks/useSocket';
 import D3Treemap from '../components/D3Treemap';
 
 export default function Heatmap() {

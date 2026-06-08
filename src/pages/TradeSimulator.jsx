@@ -2,9 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Shield, PlayCircle, BarChart2, Activity, Zap, Server, StopCircle, RefreshCw } from 'lucide-react';
 import axios from 'axios';
-import { useUser } from '../hooks/useUser';
+import { useUser } from '../context/UserContext';
 import { API_BASE_URL } from '../config';
-import { useToast } from '../hooks/useToast';
+import { useToast } from '../components/Toast';
 
 export default function TradeSimulator() {
   const { user } = useUser();

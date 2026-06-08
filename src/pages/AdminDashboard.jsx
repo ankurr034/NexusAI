@@ -4,7 +4,7 @@ import { ShieldAlert, Activity, Server, Zap, RefreshCw, XCircle, AlertTriangle, 
 import axios from 'axios';
 import { API_BASE_URL } from '../config';
 import { useUser } from '../context/UserContext';
-import { useSocket } from '../hooks/useSocket';
+import useSocket from '../hooks/useSocket';
 import { Navigate } from 'react-router-dom';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { useToast } from '../components/Toast';

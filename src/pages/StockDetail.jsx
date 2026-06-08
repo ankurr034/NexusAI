@@ -13,6 +13,8 @@ import {
 } from 'recharts';
 import { AdvancedRealTimeChart } from "react-ts-tradingview-widgets";
 import useSocket from '../hooks/useSocket';
+import useCachedData from '../hooks/useCachedData';
+import ErrorBoundary from '../components/ErrorBoundary';
 import { formatTradingViewSymbol } from '../utils/symbolFormatter';
 
 const TVWidgetWrapper = React.memo(({ tvSymbol }) => {
@@ -52,10 +54,8 @@ export default function StockDetail() {
   const toast = useToast();
   const { tickerId } = useParams();
   const { user, isLiveMode, brokerConnected } = useUser();
-  
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  const activeTicker = tickerId; // centralized activeTicker state
+
   const [inWatchlist, setInWatchlist] = useState(false);
 
   const [orderType, setOrderType] = useState('BUY');
@@ -75,33 +75,41 @@ export default function StockDetail() {
   // Formatted symbol using useMemo
   const tvSymbol = React.useMemo(() => formatTradingViewSymbol(tickerId, exchange), [tickerId, exchange]);
 
-  // Real-time Socket Connection
-  const { socket, isConnected, data: socketData } = useSocket('price_update');
+  const { data, isLoading: loadingData, isFetching: fetchingData, error: errData } = useCachedData(`${API_BASE_URL}/api/stock/${activeTicker}?range_type=${timeRange}`, { ttl: 120000, enabled: !!user && !!activeTicker, cacheKey: `stock_${activeTicker}_${timeRange}` });
+  const { data: historyRes, isLoading: loadingHistory } = useCachedData(`${API_BASE_URL}/api/history?symbol=${activeTicker}&range_type=${timeRange}`, { ttl: 60000, enabled: !!user && !!activeTicker, cacheKey: `history_${activeTicker}_${timeRange}` });
+  const { data: newsRes, isLoading: loadingNews } = useCachedData(`${API_BASE_URL}/api/news?symbol=${activeTicker}`, { ttl: 300000, enabled: !!user && !!activeTicker, cacheKey: `news_${activeTicker}` });
+  const { data: cdslRes } = useCachedData(`${API_BASE_URL}/api/cdsl/status/${activeTicker}?user_id=${user?.id}`, { ttl: 300000, enabled: !!user && !!activeTicker, cacheKey: `cdsl_${activeTicker}` });
+
+  const historyData = historyRes?.history || [];
+  const newsData = newsRes?.news || [];
+  const loading = loadingData || loadingHistory || loadingNews;
+  const error = errData;
 
   useEffect(() => {
-    if (socket && isConnected && tickerId) {
-      console.log(`[WebSocket] Subscribing to stock: ${tickerId}`);
-      socket.emit('subscribe_stock', tickerId);
+     if (cdslRes) setIsAuthorized(cdslRes.authorized);
+     if (data?.current_price) setPrice(data.current_price);
+  }, [cdslRes, data]);
 
+  // Real-time Socket Connection
+  const { socket, isConnected, data: socketData, subscribe, unsubscribe } = useSocket('price_update');
+
+  useEffect(() => {
+    if (socket && isConnected && activeTicker) {
+      subscribe(activeTicker);
       return () => {
-        console.log(`[WebSocket] Unsubscribing from stock: ${tickerId}`);
-        socket.emit('unsubscribe_stock', tickerId);
-        socket.off('price_update');
+        unsubscribe(activeTicker);
       };
     }
-  }, [socket, isConnected, tickerId]);
+  }, [socket, isConnected, activeTicker, subscribe, unsubscribe]);
 
   useEffect(() => {
     if (socketData && Array.isArray(socketData)) {
-      const match = socketData.find(d => d.symbol === tickerId.replace('.NS', '').replace('.BO', ''));
+      const match = socketData.find(d => d.symbol === activeTicker.replace('.NS', '').replace('.BO', ''));
       if (match) {
         setPrice(parseFloat(match.value.replace(/,/g, '')));
-        console.log("Price Update Received");
       }
     }
-  }, [socketData, tickerId]);
-
-  console.log("Parent Rerender: StockDetail");
+  }, [socketData, activeTicker]);
 
   const fetchBalance = useCallback(async () => {
     if (!user) return;
@@ -119,50 +127,15 @@ export default function StockDetail() {
 
   useEffect(() => {
     const abortController = new AbortController();
-    
-    const fetchData = async () => {
-      if (!user) return;
-      setLoading(true);
-      setError(null);
-      try {
-        console.log(`[API] Fetching data for: ${tickerId}`);
-        const response = await axios.get(`${API_BASE_URL}/api/stock/${tickerId}?range_type=${timeRange}`, {
-          signal: abortController.signal
-        });
-        setData(response.data);
-        if (response.data.current_price) setPrice(response.data.current_price);
-        
-        // Also check CDSL status
-        const cdslRes = await axios.get(`${API_BASE_URL}/api/cdsl/status/${tickerId}?user_id=${user.id}`, {
-          signal: abortController.signal
-        });
-        setIsAuthorized(cdslRes.data.authorized);
-      } catch (err) {
-        if (axios.isCancel(err)) {
-           console.log(`[API] Request cancelled for ${tickerId}`);
-           return;
-        }
-        setError(err.response?.data?.detail || 'Failed to fetch data');
-      } finally {
-        setLoading(false);
-      }
-    };
-    if (tickerId && user) {
-      fetchData();
-      
-      // Fetch watchlist status
+    if (activeTicker && user) {
       axios.get(`${API_BASE_URL}/api/watchlist?user_id=${user.id}`, { signal: abortController.signal })
-        .then(res => setInWatchlist(res.data.watchlist.includes(tickerId)))
+        .then(res => setInWatchlist(res.data.watchlist.includes(activeTicker)))
         .catch(e => {
             if (!axios.isCancel(e)) console.error(e);
         });
     }
-
-    return () => {
-      console.log(`[API] Cleaning up async fetch for ${tickerId}`);
-      abortController.abort();
-    };
-  }, [tickerId, timeRange, user, isLiveMode]);
+    return () => abortController.abort();
+  }, [activeTicker, user]);
 
   const toggleWatchlist = async () => {
     if (!user) return;
@@ -226,7 +199,7 @@ export default function StockDetail() {
   };
 
   const currentPrice = data?.current_price || 0;
-  const previousPrice = data?.history?.[data.history.length - 2]?.close || currentPrice;
+  const previousPrice = historyData?.[historyData.length - 2]?.close || currentPrice;
   const dayChange = currentPrice - previousPrice;
   const dayChangePercent = previousPrice > 0 ? (dayChange / previousPrice) * 100 : 0;
   const isPositive = dayChange >= 0;
@@ -252,8 +225,29 @@ export default function StockDetail() {
   };
 
   const filteredData = React.useMemo(() => {
-    if (!data?.history) return [];
-    let d = [...data.history];
+    if (!historyData || historyData.length === 0) return [];
+    
+    // Strict OHLC Validation
+    let validData = historyData.filter(d => 
+        d.date && 
+        typeof d.close === 'number' && !isNaN(d.close) &&
+        typeof d.open === 'number' && !isNaN(d.open) &&
+        typeof d.high === 'number' && !isNaN(d.high) &&
+        typeof d.low === 'number' && !isNaN(d.low)
+    );
+    
+    // Deduplication
+    const seen = new Set();
+    validData = validData.filter(d => {
+       if (seen.has(d.date)) return false;
+       seen.add(d.date);
+       return true;
+    });
+
+    // Chronological Sort
+    validData.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+    let d = [...validData];
     
     // Apply date range filter
     if (dateRange.start) d = d.filter(item => item.date >= dateRange.start);
@@ -267,7 +261,7 @@ export default function StockDetail() {
     }
     
     return d;
-  }, [data?.history, timeRange, dateRange]);
+  }, [historyData, timeRange, dateRange]);
 
   const CandleStick = (props) => {
     const { x, y, width, height, low, high, open, close } = props;
@@ -370,7 +364,12 @@ export default function StockDetail() {
           <div className="lg:col-span-2 space-y-8">
             {/* Header */}
             <div>
-              <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
+              <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6 relative">
+                 {fetchingData && (
+                    <div className="absolute top-0 right-0 -mt-6 bg-white/[0.04] px-2 py-1 rounded-full border border-white/[0.06] flex items-center gap-1.5 text-[9px] text-zinc-400 font-bold tracking-widest">
+                       <RefreshCw className="w-3 h-3 animate-spin" /> SYNCING
+                    </div>
+                 )}
                 <div className="flex items-center gap-4">
                   <div className="w-12 h-12 rounded-xl bg-white/[0.04] border border-white/[0.06] flex items-center justify-center">
                     <span className="font-extrabold text-2xl text-gradient">{data.ticker.charAt(0)}</span>
@@ -437,11 +436,14 @@ export default function StockDetail() {
             </div>
 
             {/* Main Chart - TradingView Advanced */}
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-[500px] w-full relative group rounded-xl overflow-hidden border border-white/[0.04]">
-              <TVWidgetWrapper tvSymbol={tvSymbol} />
-            </motion.div>
+            <ErrorBoundary componentName="AdvancedChart" activeTicker={activeTicker}>
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-[500px] w-full relative group rounded-xl overflow-hidden border border-white/[0.04]">
+                <TVWidgetWrapper tvSymbol={tvSymbol} />
+              </motion.div>
+            </ErrorBoundary>
 
             {/* AI LSTM Card with Prediction Line Chart */}
+            <ErrorBoundary componentName="AIAnalysis" activeTicker={activeTicker}>
             <div className="glass-panel p-6 border-l-4 border-l-primary flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
               <div className="flex-1 w-full">
                 <h3 className="text-base font-bold text-white mb-1 flex items-center gap-2">
@@ -494,8 +496,10 @@ export default function StockDetail() {
                 </div>
               )}
             </div>
+            </ErrorBoundary>
 
             {/* Fundamentals */}
+            <ErrorBoundary componentName="Financials" activeTicker={activeTicker}>
             <div className="pt-4 border-t border-white/[0.04]">
               <h3 className="text-lg font-bold text-white mb-5">Fundamentals</h3>
               <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
@@ -517,8 +521,10 @@ export default function StockDetail() {
                 ))}
               </div>
             </div>
+            </ErrorBoundary>
 
             {/* Intelligence News Feed (Groww Style) */}
+            <ErrorBoundary componentName="NewsFeed" activeTicker={activeTicker}>
             <div className="pt-8 border-t border-white/[0.04]">
               <div className="flex items-center justify-between mb-6">
                 <h3 className="text-xl font-black text-white flex items-center gap-2">
@@ -530,7 +536,7 @@ export default function StockDetail() {
               </div>
               
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {data.news && data.news.length > 0 ? data.news.map((item, i) => (
+                {newsData && newsData.length > 0 ? newsData.map((item, i) => (
                   <motion.a 
                     key={i} 
                     href={item.link} 
@@ -563,6 +569,7 @@ export default function StockDetail() {
                 )}
               </div>
             </div>
+            </ErrorBoundary>
           </div>
 
           {/* RIGHT PANEL - Order Form */}

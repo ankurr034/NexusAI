@@ -2,8 +2,10 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { API_BASE_URL } from '../config';
 import useSocket from '../hooks/useSocket';
+import useMarketSession from '../hooks/useMarketSession';
 
 export default function LiveTickerStrip() {
+  const session = useMarketSession(false);
   const [tickerData, setTickerData] = useState([
     { symbol: 'NIFTY 50', value: '22,450.60', change: '+126.35', pct: '+0.56%', up: true },
     { symbol: 'SENSEX', value: '73,876.82', change: '+410.25', pct: '+0.55%', up: true },
@@ -31,8 +33,15 @@ export default function LiveTickerStrip() {
   );
 
   return (
-    <div className="w-full bg-[#0a0a0a] border-b border-white/[0.04] overflow-hidden relative">
-      <div className="ticker-strip">
+    <div className="w-full bg-[#0a0a0a] border-b border-white/[0.04] overflow-hidden relative flex items-center">
+      <div className="px-4 py-1.5 border-r border-white/[0.04] flex items-center gap-2 shrink-0 bg-white/[0.01]">
+         <div className={`w-1.5 h-1.5 rounded-full ${session.status === 'OPEN' ? 'bg-emerald-500 animate-pulse' : session.status === 'PREMARKET' ? 'bg-amber-500' : 'bg-red-500'}`} />
+         <span className={`text-[10px] font-black tracking-widest uppercase ${session.status === 'OPEN' ? 'text-emerald-400' : session.status === 'PREMARKET' ? 'text-amber-400' : 'text-zinc-500'}`}>
+            MARKET {session.status}
+         </span>
+         <span className="text-[9px] text-zinc-600 font-bold ml-1 hidden md:inline-block">({session.nextTransition})</span>
+      </div>
+      <div className="ticker-strip flex-1">
         <div className="ticker-track">
           {[...tickerData, ...tickerData, ...tickerData].map((item, i) => (
             <TickerItem key={i} item={item} />

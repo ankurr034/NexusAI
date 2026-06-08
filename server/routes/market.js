@@ -59,11 +59,15 @@ router.get('/stock/:tickerId', (req, res) => {
   try {
     const { tickerId } = req.params;
     const { range_type } = req.query;
+    const cleanTicker = tickerId.toUpperCase();
     
     // Fallback static data that perfectly matches StockDetail.jsx schema
-    const currentPrice = tickerId.includes('RELIANCE') ? 2950.20 : 
-                         tickerId.includes('TCS') ? 4120.00 : 
-                         tickerId.includes('HDFC') ? 1440.50 : 1200.00;
+    const currentPrice = cleanTicker.includes('RELIANCE') ? 2950.20 : 
+                         cleanTicker.includes('TCS') ? 4120.00 : 
+                         cleanTicker.includes('HDFC') ? 1440.50 : 
+                         cleanTicker.includes('TSLA') ? 14500.50 : 
+                         cleanTicker.includes('NVDA') ? 85000.00 : 
+                         cleanTicker.includes('MSFT') ? 35000.00 : 1200.00;
                          
     const historyData = [];
     let priceIter = currentPrice * 0.8;
@@ -107,9 +111,9 @@ router.get('/stock/:tickerId', (req, res) => {
       history: historyData,
       prediction: currentPrice * 1.05,
       ai_insights: {
-        overall_sentiment: 'BULLISH',
-        detected_pattern: 'Bull Flag Breakout',
-        momentum_score: 78
+        overall_sentiment: cleanTicker.includes('TSLA') ? 'VOLATILE' : cleanTicker.includes('NVDA') ? 'EXTREME BULLISH' : 'BULLISH',
+        detected_pattern: cleanTicker.includes('RELIANCE') ? 'Bull Flag Breakout' : 'Ascending Triangle',
+        momentum_score: Math.floor(Math.random() * 30) + 60
       },
       news: [
         { title: `Strong institutional buying detected in ${tickerId}`, publisher: 'Nexus Intelligence', link: '#', ai_sentiment: 'BULLISH', ai_sentiment_color: '#10b981' },
@@ -119,6 +123,62 @@ router.get('/stock/:tickerId', (req, res) => {
   } catch (error) {
     console.error('Error fetching stock details:', error);
     res.status(500).json({ detail: 'Failed to fetch stock details' });
+  }
+});
+
+router.get('/history', (req, res) => {
+  try {
+    const { symbol, range_type } = req.query;
+    if (!symbol) return res.status(400).json({ detail: 'Symbol required' });
+    const cleanTicker = symbol.toUpperCase();
+    
+    const currentPrice = cleanTicker.includes('RELIANCE') ? 2950.20 : 
+                         cleanTicker.includes('TCS') ? 4120.00 : 
+                         cleanTicker.includes('HDFC') ? 1440.50 : 
+                         cleanTicker.includes('TSLA') ? 14500.50 : 
+                         cleanTicker.includes('NVDA') ? 85000.00 : 
+                         cleanTicker.includes('MSFT') ? 35000.00 : 1200.00;
+                         
+    const historyData = [];
+    let priceIter = currentPrice * 0.8;
+    const count = range_type === '1M' ? 30 : range_type === '3M' ? 90 : range_type === '6M' ? 180 : 365;
+    
+    for (let i = count; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      priceIter = priceIter + (Math.random() - 0.45) * 50;
+      historyData.push({
+        date: d.toISOString().split('T')[0],
+        close: parseFloat(priceIter.toFixed(2)),
+        open: parseFloat((priceIter - Math.random() * 20).toFixed(2)),
+        high: parseFloat((priceIter + Math.random() * 20).toFixed(2)),
+        low: parseFloat((priceIter - Math.random() * 20 - 5).toFixed(2)),
+        volume: Math.floor(Math.random() * 1000000)
+      });
+    }
+    
+    if (historyData.length > 0) {
+       historyData[historyData.length - 1].close = currentPrice;
+    }
+    res.json({ history: historyData });
+  } catch (e) {
+    res.status(500).json({ detail: e.message });
+  }
+});
+
+router.get('/news', (req, res) => {
+  try {
+    const { symbol } = req.query;
+    if (!symbol) return res.status(400).json({ detail: 'Symbol required' });
+    res.json({
+      news: [
+        { title: `Strong institutional buying detected in ${symbol}`, publisher: 'Nexus Intelligence', link: '#', ai_sentiment: 'BULLISH', ai_sentiment_color: '#10b981' },
+        { title: `Sector rotation favors ${symbol}`, publisher: 'Market Watch', link: '#', ai_sentiment: 'POSITIVE', ai_sentiment_color: '#3b82f6' },
+        { title: `${symbol} upcoming earnings expectations`, publisher: 'Bloomberg', link: '#', ai_sentiment: 'NEUTRAL', ai_sentiment_color: '#8b5cf6' }
+      ]
+    });
+  } catch(e) {
+    res.status(500).json({ detail: e.message });
   }
 });
 
@@ -235,7 +295,7 @@ router.post('/broker/order', async (req, res) => {
     const activeUser = user_id || 'nexus-sim-user';
     
     const finalOrderConfig = order_config || {
-        symbol: req.query.symbol || 'AAPL',
+        symbol: req.query.symbol || req.body.symbol || 'RELIANCE',
         action: 'BUY',
         quantity: req.query.quantity || 1,
         type: 'MARKET'
