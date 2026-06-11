@@ -94,6 +94,7 @@ export const UserProvider = ({ children }) => {
     try {
       const res = await axios.post(`${API_BASE_URL}/api/auth/login`, { username, password });
       localStorage.setItem('nexus_user_id', res.data.user_id);
+      if (res.data.token) localStorage.setItem('nexus_jwt', res.data.token);
       await fetchUserData(res.data.user_id);
       return { success: true };
     } catch (err) {
@@ -150,6 +151,7 @@ export const UserProvider = ({ children }) => {
 
   const logout = () => {
     localStorage.removeItem('nexus_user_id');
+    localStorage.removeItem('nexus_jwt');
     localStorage.removeItem('nexus_is_live');
     setUser(null);
     setProfile(null);

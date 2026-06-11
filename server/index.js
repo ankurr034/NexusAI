@@ -1,3 +1,6 @@
+// Load environment variables BEFORE any module that reads them at import time
+// (ES module imports are hoisted, so this must be the very first import).
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import mongoose from 'mongoose';
@@ -28,6 +31,7 @@ import PaperTradingEngine from './services/PaperTradingEngine.js';
 import MarketDataService from './services/MarketDataService.js';
 
 dotenv.config();
+mongoose.set('bufferCommands', false);
 
 const log = createLogger('Server');
 const wsLog = createLogger('WebSocket');
@@ -36,12 +40,13 @@ const mktLog = createLogger('MarketData');
 // ═══════════════════════════════════════════════════════════
 //  Startup Environment Validation
 // ═══════════════════════════════════════════════════════════
-const requiredEnvs = ['JWT_SECRET', 'BROKER_API_KEY', 'BROKER_SECRET', 'REDIRECT_URI', 'CLIENT_ID', 'CLIENT_SECRET', 'WS_URL'];
+const requiredEnvs = ['BROKER_API_KEY', 'BROKER_SECRET', 'REDIRECT_URI', 'CLIENT_ID', 'CLIENT_SECRET', 'WS_URL'];
 requiredEnvs.forEach(env => {
   if (!process.env[env]) {
     log.warn(`Missing ENV variable: ${env}. Broker integration may fail in production.`);
   }
 });
+// JWT_SECRET is validated authoritatively in utils/secrets.js (fail-fast in production).
 
 // ═══════════════════════════════════════════════════════════
 //  Global Process Error Handlers
@@ -76,6 +81,39 @@ const io = new Server(httpServer, {
 });
 
 // ═══════════════════════════════════════════════════════════
+//  MULTI-INSTANCE COORDINATION
+//  In pm2 cluster mode every instance runs this file, so the
+//  broadcast/polling timers must fire on ONE leader only — else
+//  clients get duplicated emits and Yahoo Finance gets hammered.
+//  For socket fan-out across instances, set REDIS_URL so the
+//  leader's emits reach clients connected to any instance.
+// ═══════════════════════════════════════════════════════════
+const INSTANCE_ID = process.env.NODE_APP_INSTANCE ?? process.env.pm_id ?? '0';
+const IS_TIMER_LEADER = String(INSTANCE_ID) === '0';
+
+(async () => {
+  if (!process.env.REDIS_URL) {
+    if (INSTANCE_ID !== '0') {
+      wsLog.warn('Running a non-leader instance without REDIS_URL — socket clients here will not receive leader broadcasts. Set REDIS_URL for multi-instance fan-out.');
+    }
+    return;
+  }
+  try {
+    const [{ createAdapter }, { createClient }] = await Promise.all([
+      import('@socket.io/redis-adapter'),
+      import('redis')
+    ]);
+    const pubClient = createClient({ url: process.env.REDIS_URL });
+    const subClient = pubClient.duplicate();
+    await Promise.all([pubClient.connect(), subClient.connect()]);
+    io.adapter(createAdapter(pubClient, subClient));
+    wsLog.info('Socket.IO Redis adapter attached — broadcasts now fan out across instances.');
+  } catch (err) {
+    wsLog.error('Failed to attach Redis adapter (is `@socket.io/redis-adapter redis` installed?). Falling back to single-instance broadcasting.', { error: err.message });
+  }
+})();
+
+// ═══════════════════════════════════════════════════════════
 //  SECURITY MIDDLEWARE STACK
 // ═══════════════════════════════════════════════════════════
 
@@ -86,20 +124,35 @@ app.use(helmet({
 }));
 
 // 2. CORS
-const allowedOrigins = [
+// Production allows ONLY the explicit origins in FRONTEND_URL (comma-separated).
+// Localhost is auto-trusted in development only, so a deployed API never
+// accepts requests from an arbitrary localhost:* origin.
+const explicitOrigins = (process.env.FRONTEND_URL || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+const devLocalhost = [
   'http://localhost:5173',
   'http://localhost:5174',
   'http://localhost:5175',
   'http://localhost:3000'
 ];
 
+const allowedOrigins = process.env.NODE_ENV === 'production'
+  ? explicitOrigins
+  : [...new Set([...devLocalhost, ...explicitOrigins])];
+
+if (process.env.NODE_ENV === 'production' && explicitOrigins.length === 0) {
+  log.warn('CORS: FRONTEND_URL is not set in production — all cross-origin browser requests will be rejected.');
+}
+
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin) return callback(null, true); // Allow server-to-server or Postman
-    if (allowedOrigins.includes(origin) || /^http:\/\/localhost:\d+$/.test(origin)) {
-      return callback(null, true);
-    }
-    if (process.env.FRONTEND_URL && origin === process.env.FRONTEND_URL) {
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    // In development only, trust any localhost port for convenience.
+    if (process.env.NODE_ENV !== 'production' && /^http:\/\/localhost:\d+$/.test(origin)) {
       return callback(null, true);
     }
     return callback(new Error('Not allowed by CORS'));
@@ -399,8 +452,12 @@ setInterval(async () => {
 }, 300000);
 
 // ═══════════════════════════════════════════════════════════
-//  BROADCAST TIMERS
+//  BROADCAST TIMERS  (leader instance only — see IS_TIMER_LEADER)
 // ═══════════════════════════════════════════════════════════
+// Declared at module scope so the startup log can read it on every instance.
+const activeTickers = ['NIFTY 50', 'SENSEX', 'BANKNIFTY', 'RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'ICICIBANK'];
+
+if (IS_TIMER_LEADER) {
 
 // Admin Telemetry every 3 seconds
 setInterval(() => {
@@ -430,7 +487,6 @@ setInterval(() => {
 // ═══════════════════════════════════════════════════════════
 //  MARKET DATA ENGINE — Enhanced Polling
 // ═══════════════════════════════════════════════════════════
-const activeTickers = ['NIFTY 50', 'SENSEX', 'BANKNIFTY', 'RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'ICICIBANK'];
 MarketDataService.startPolling(activeTickers, 5000);
 
 // Broadcast stock updates — batched
@@ -494,6 +550,10 @@ setInterval(() => {
   io.emit('smart_alert', alerts[alertTick % alerts.length]);
   alertTick++;
 }, 20000);
+
+} else {
+  log.info(`Instance ${INSTANCE_ID} is a follower — broadcast/polling timers run on the leader only.`);
+}
 
 // ═══════════════════════════════════════════════════════════
 //  GLOBAL ERROR HANDLER

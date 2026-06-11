@@ -1,7 +1,18 @@
 import express from 'express';
 import { WalletAccount, WalletTransaction } from '../models/Wallet.js';
+import { dbUnavailableDetail, isDbReady } from '../utils/dbReady.js';
 
 const router = express.Router();
+
+const demoWallet = {
+  balance: 1000000,
+  usedMargin: 0,
+  totalDeposits: 0,
+  totalWithdrawals: 0,
+  transactions: [],
+  mode: 'Demo',
+  warning: dbUnavailableDetail()
+};
 
 // ═══════════════════════════════════════════════════════════
 //  Helper: Get or create wallet for a user
@@ -21,6 +32,7 @@ router.get('/', async (req, res) => {
   try {
     const userId = req.query.user_id;
     if (!userId) return res.status(400).json({ detail: 'user_id required' });
+    if (!isDbReady()) return res.json(demoWallet);
 
     const wallet = await getOrCreateWallet(userId);
     const transactions = await WalletTransaction.find({ userId })

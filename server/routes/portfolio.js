@@ -1,8 +1,39 @@
 import express from 'express';
 import { PaperPosition } from '../models/PaperTrading.js';
 import MarketDataService from '../services/MarketDataService.js';
+import { dbUnavailableDetail, isDbReady } from '../utils/dbReady.js';
 
 const router = express.Router();
+
+function buildDemoPortfolio() {
+  const demoHoldings = [
+    { symbol: 'RELIANCE', exchange: 'NSE', segment: 'EQ', isin: 'INE002A01018', qty: 50, avg_price: 2400.0 },
+    { symbol: 'TCS', exchange: 'NSE', segment: 'EQ', isin: 'INE467B01029', qty: 20, avg_price: 3500.0 },
+    { symbol: 'HDFCBANK', exchange: 'NSE', segment: 'EQ', isin: 'INE040A01034', qty: 100, avg_price: 1500.0 }
+  ].map(h => {
+    const livePrice = MarketDataService.getCurrentPrice(h.symbol);
+    const current = livePrice * h.qty;
+    const invested = h.avg_price * h.qty;
+    return {
+      ...h,
+      current_price: livePrice,
+      current,
+      invested,
+      pnl: current - invested,
+      pnl_pct: parseFloat(((current - invested) / invested * 100).toFixed(2)),
+      is_authorized: true
+    };
+  });
+
+  const invested = demoHoldings.reduce((sum, h) => sum + h.invested, 0);
+  const current = demoHoldings.reduce((sum, h) => sum + h.current, 0);
+
+  return {
+    mode: 'Demo',
+    summary: { invested, current, pnl: current - invested },
+    holdings: demoHoldings
+  };
+}
 
 // ═══════════════════════════════════════════════════════════
 //  GET /api/portfolio — Live portfolio from PaperPosition + MarketDataService
@@ -10,39 +41,15 @@ const router = express.Router();
 router.get('/', async (req, res) => {
   try {
     const userId = req.query.user_id || 'nexus-sim-user';
+    if (!isDbReady()) {
+      return res.json({ ...buildDemoPortfolio(), warning: dbUnavailableDetail() });
+    }
     
     // Fetch real positions from DB
     const positions = await PaperPosition.find({ userId, quantity: { $gt: 0 } }).lean();
     
     if (positions.length === 0) {
-      // Return demo holdings if no positions exist yet
-      const demoHoldings = [
-        { symbol: 'RELIANCE', exchange: 'NSE', segment: 'EQ', isin: 'INE002A01018', qty: 50, avg_price: 2400.0 },
-        { symbol: 'TCS', exchange: 'NSE', segment: 'EQ', isin: 'INE467B01029', qty: 20, avg_price: 3500.0 },
-        { symbol: 'HDFCBANK', exchange: 'NSE', segment: 'EQ', isin: 'INE040A01034', qty: 100, avg_price: 1500.0 }
-      ].map(h => {
-        const livePrice = MarketDataService.getCurrentPrice(h.symbol);
-        const current = livePrice * h.qty;
-        const invested = h.avg_price * h.qty;
-        return {
-          ...h,
-          current_price: livePrice,
-          current,
-          invested,
-          pnl: current - invested,
-          pnl_pct: parseFloat(((current - invested) / invested * 100).toFixed(2)),
-          is_authorized: true
-        };
-      });
-
-      const invested = demoHoldings.reduce((sum, h) => sum + h.invested, 0);
-      const current = demoHoldings.reduce((sum, h) => sum + h.current, 0);
-
-      return res.json({
-        mode: 'Demo',
-        summary: { invested, current, pnl: current - invested },
-        holdings: demoHoldings
-      });
+      return res.json(buildDemoPortfolio());
     }
 
     // Real positions from PaperTradingEngine
@@ -87,7 +94,9 @@ router.get('/', async (req, res) => {
 router.get('/analysis', async (req, res) => {
   try {
     const userId = req.query.user_id || 'nexus-sim-user';
-    const positions = await PaperPosition.find({ userId, quantity: { $gt: 0 } }).lean();
+    const positions = isDbReady()
+      ? await PaperPosition.find({ userId, quantity: { $gt: 0 } }).lean()
+      : [];
     
     // Calculate sector diversification from actual positions
     const sectorMap = {

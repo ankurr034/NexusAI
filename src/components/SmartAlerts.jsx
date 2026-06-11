@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Bell, TrendingUp, TrendingDown, Zap, AlertTriangle, X } from 'lucide-react';
 import useSocket from '../hooks/useSocket';
+import SimulatedBadge from './SimulatedBadge';
 
 export default function SmartAlerts() {
   const { data: alertData } = useSocket('smart_alert');
@@ -53,8 +54,11 @@ export default function SmartAlerts() {
                   <Bell className="w-3 h-3" /> {alert.title}
                 </h4>
                 <p className="text-sm font-medium text-white leading-snug">{alert.message}</p>
-                <div className="mt-2 text-[10px] font-mono-data opacity-60">
-                  {new Date().toLocaleTimeString('en-US', { hour12: false })}
+                <div className="mt-2 flex items-center justify-between">
+                  <span className="text-[10px] font-mono-data opacity-60">
+                    {new Date().toLocaleTimeString('en-US', { hour12: false })}
+                  </span>
+                  <SimulatedBadge size="sm" title="Demo alert — illustrative signal, not a real market event." />
                 </div>
               </div>
             </div>

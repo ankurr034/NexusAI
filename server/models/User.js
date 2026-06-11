@@ -1,8 +1,17 @@
 import mongoose from 'mongoose';
 
 const UserSchema = new mongoose.Schema({
-  walletAddress: { type: String, unique: true, required: true },
-  nonce: { type: String, required: true },
+  // ── Web2 credential identity (email/username + password) ──
+  username: { type: String, unique: true, sparse: true, trim: true, lowercase: true },
+  email: { type: String, unique: true, sparse: true, trim: true, lowercase: true },
+  passwordHash: { type: String, default: null }, // bcrypt hash — never store plaintext
+  full_name: { type: String, default: '' },
+  kyc_status: { type: String, enum: ['UNVERIFIED', 'PENDING', 'VERIFIED'], default: 'UNVERIFIED' },
+
+  // ── Web3 wallet identity (optional — only set for wallet-based signups) ──
+  walletAddress: { type: String, unique: true, sparse: true },
+  nonce: { type: String, default: null },
+
   account_mode: { type: String, enum: ['demo', 'live'], default: 'demo' },
   isPremium: { type: Boolean, default: false },
   subscription_plan: { type: String, default: 'Free' },

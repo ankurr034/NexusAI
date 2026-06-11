@@ -6,7 +6,6 @@ import { API_BASE_URL } from '../config';
 import { useUser } from '../context/UserContext';
 import useSocket from '../hooks/useSocket';
 import { Navigate } from 'react-router-dom';
-import { useQuery, useMutation } from '@tanstack/react-query';
 import { useToast } from '../components/Toast';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 
@@ -19,16 +18,34 @@ export default function AdminDashboard() {
   const [analyticsLoad, setAnalyticsLoad] = useState(null);
   const [simulatorLoad, setSimulatorLoad] = useState(null);
   
-  // React Query for initial load and polling
-  const { data: adminData, isLoading, refetch } = useQuery({
-    queryKey: ['adminBrokerStats'],
-    queryFn: async () => {
+  const [adminData, setAdminData] = useState(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isClearingCache, setIsClearingCache] = useState(false);
+
+  // Standard fetch function
+  const fetchAdminData = async () => {
+    if (!user || (!user.isAdmin && user.username !== 'admin')) return;
+    try {
       const res = await axios.get(`${API_BASE_URL}/api/admin/broker-stats`);
-      return res.data;
-    },
-    refetchInterval: 10000, // Poll every 10s as a fallback
-    enabled: !!(user?.isAdmin || user?.username === 'admin')
-  });
+      setAdminData(res.data);
+    } catch (err) {
+      console.error('Failed to fetch admin stats', err);
+    }
+  };
+
+  // Poll for data
+  useEffect(() => {
+    if (!user || (!user.isAdmin && user.username !== 'admin')) return;
+    
+    setIsLoading(true);
+    fetchAdminData().finally(() => setIsLoading(false));
+
+    const interval = setInterval(() => {
+      fetchAdminData();
+    }, 10000); // Poll every 10s as a fallback
+
+    return () => clearInterval(interval);
+  }, [user]);
 
   // WebSocket for Real-Time Telemetry
   useEffect(() => {
@@ -58,24 +75,29 @@ export default function AdminDashboard() {
     }
   }, [adminData]);
 
-  // Mutations for Admin Controls
-  const clearCacheMutation = useMutation({
-    mutationFn: async () => {
+  // Controls Handlers
+  const handleClearCache = async () => {
+    setIsClearingCache(true);
+    try {
        const res = await axios.post(`${API_BASE_URL}/api/admin/broker/clear-cache`);
-       return res.data;
-    },
-    onSuccess: (data) => addToast('success', data.message || 'Cache Cleared'),
-    onError: (err) => addToast('error', 'Failed to clear cache')
-  });
+       addToast('success', res.data.message || 'Cache Cleared');
+       fetchAdminData();
+    } catch (err) {
+       addToast('error', 'Failed to clear cache');
+    } finally {
+       setIsClearingCache(false);
+    }
+  };
 
-  const disconnectMutation = useMutation({
-    mutationFn: async (broker_name) => {
+  const handleDisconnect = async (broker_name) => {
+    try {
        const res = await axios.post(`${API_BASE_URL}/api/admin/broker/disconnect`, { broker_name });
-       return res.data;
-    },
-    onSuccess: (data) => addToast('success', data.message || 'Broker Disconnected'),
-    onError: (err) => addToast('error', 'Failed to disconnect broker')
-  });
+       addToast('success', res.data.message || 'Broker Disconnected');
+       fetchAdminData();
+    } catch (err) {
+       addToast('error', 'Failed to disconnect broker');
+    }
+  };
 
   if (!user || (!user.isAdmin && user.username !== 'admin')) {
     return <Navigate to="/explore" />;
@@ -107,10 +129,10 @@ export default function AdminDashboard() {
         </div>
         <div className="flex items-center gap-3">
            <button 
-             onClick={() => clearCacheMutation.mutate()}
-             disabled={clearCacheMutation.isLoading}
+             onClick={handleClearCache}
+             disabled={isClearingCache}
              className="px-4 py-2 bg-white/[0.05] border border-white/[0.1] rounded-xl text-sm font-bold text-white hover:bg-white/[0.1] transition-all flex items-center gap-2">
-             <RefreshCw className={`w-4 h-4 ${clearCacheMutation.isLoading ? 'animate-spin' : ''}`} /> Clear Idempotency Cache
+             <RefreshCw className={`w-4 h-4 ${isClearingCache ? 'animate-spin' : ''}`} /> Clear Idempotency Cache
            </button>
         </div>
       </div>
@@ -170,7 +192,7 @@ export default function AdminDashboard() {
             {/* Controls */}
             <div className="pt-4 border-t border-white/[0.06] flex gap-2">
                <button 
-                 onClick={() => disconnectMutation.mutate(broker.activeAdapter)}
+                 onClick={() => handleDisconnect(broker.activeAdapter)}
                  className="flex-1 py-2 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 rounded-lg text-rose-400 text-xs font-bold transition-all flex items-center justify-center gap-2">
                  <XCircle className="w-3 h-3" /> Force Disconnect
                </button>

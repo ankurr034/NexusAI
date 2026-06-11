@@ -381,7 +381,8 @@ router.post('/broker/order', async (req, res) => {
       quantity,
       type: orderType,
       price: livePrice,
-      isPaperTrade: true
+      isPaperTrade: true,
+      idempotencyKey // share the route's stable key with the gateway dedup layer
     };
 
     let orderResult;

@@ -4,6 +4,7 @@ import { Activity, Search, Zap, ArrowUpRight, ArrowDownRight, BarChart2, Eye, Re
 import axios from 'axios';
 import { API_BASE_URL } from '../config';
 import useSocket from '../hooks/useSocket';
+import SimulatedBadge from '../components/SimulatedBadge';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, BarChart, Bar, Cell } from 'recharts';
 
 const fadeUp = { hidden: { opacity: 0, y: 20 }, show: { opacity: 1, y: 0, transition: { duration: 0.5 } } };
@@ -75,6 +76,9 @@ export default function Microstructure() {
             <div>
               <h1 className="text-3xl md:text-4xl font-black text-white">Market Microstructure</h1>
               <p className="text-zinc-500 text-sm mt-0.5">Bloomberg-grade order flow analytics on your dashboard</p>
+              <div className="mt-2">
+                <SimulatedBadge title="The order book, trade tape and signals on this page are generated for demonstration and are not a live exchange feed." />
+              </div>
             </div>
           </div>
           <form onSubmit={handleSearch} className="flex gap-2">

@@ -6,10 +6,13 @@
   "type": "module",
   "scripts": {
     "start": "node index.js",
-    "dev": "nodemon index.js"
+    "dev": "nodemon index.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",
+    "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "ethers": "^6.16.0",
@@ -29,6 +32,11 @@
     "yahoo-finance2": "^3.15.2"
   },
   "devDependencies": {
-    "nodemon": "^3.1.9"
+    "nodemon": "^3.1.9",
+    "vitest": "^4.1.8"
+  },
+  "optionalDependencies": {
+    "@socket.io/redis-adapter": "^8.3.0",
+    "redis": "^4.7.0"
   }
 }

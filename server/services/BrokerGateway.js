@@ -153,7 +153,11 @@ class BrokerGateway {
     }
 
     // 2. Strict Idempotency Check
-    const idempotencyKey = `${accessToken}_${orderConfig.symbol}_${orderConfig.action}_${orderConfig.quantity}_${Date.now()}`;
+    // Use a STABLE key — never embed Date.now(), or every order is unique and
+    // the duplicate check can never fire. Prefer a client/route-supplied key;
+    // otherwise derive one from the order's identifying fields.
+    const idempotencyKey = orderConfig.idempotencyKey
+      || `${accessToken}_${orderConfig.symbol}_${orderConfig.action}_${orderConfig.quantity}`;
     if (this.orderCache.has(idempotencyKey)) {
       throw new Error('BrokerGateway Safety: Duplicate order detected. Rejected to prevent multi-submission.');
     }

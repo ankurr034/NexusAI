@@ -9,7 +9,9 @@ services:
       - NODE_ENV=production
       - PORT=8000
       - MONGODB_URI=mongodb://mongodb:27017/nexusai
-      - JWT_SECRET=nexusai_super_secret_production_key
+      # Never hardcode secrets here. Provide JWT_SECRET via an .env file or
+      # your orchestrator's secret store; the server fails fast if it is unset.
+      - JWT_SECRET=${JWT_SECRET}
       - RAZORPAY_KEY_ID=${RAZORPAY_KEY_ID}
       - RAZORPAY_KEY_SECRET=${RAZORPAY_KEY_SECRET}
     depends_on:
