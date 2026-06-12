@@ -1,7 +1,13 @@
 import express from 'express';
 import { PaperOrder } from '../models/PaperTrading.js';
+import { requireAuth } from '../middleware/auth.js';
+import { requestSanitizer } from '../middleware/security.js';
+import { writeAuditLog } from '../middleware/audit.js';
 
 const router = express.Router();
+
+router.use(requestSanitizer);
+router.use(requireAuth);
 
 // ═══════════════════════════════════════════════════════════
 //  GET /api/orders — Fetch orders with optional status filter
@@ -84,10 +90,12 @@ router.post('/cancel', async (req, res) => {
 
     // Security: ensure user owns this order
     if (user_id && order.userId !== user_id) {
+      writeAuditLog(user_id, 'ORDER_CANCELLED', 'FAILURE', { reason: 'Unauthorized access', orderId: order_id }, req);
       return res.status(403).json({ detail: 'Unauthorized access to order' });
     }
 
     if (order.status !== 'PENDING') {
+      writeAuditLog(user_id || order.userId, 'ORDER_CANCELLED', 'FAILURE', { reason: `Invalid status: ${order.status}`, orderId: order_id }, req);
       return res.status(400).json({ detail: `Cannot cancel order with status: ${order.status}` });
     }
 
@@ -95,10 +103,13 @@ router.post('/cancel', async (req, res) => {
     order.rejectReason = 'Cancelled by user';
     await order.save();
 
+    writeAuditLog(order.userId, 'ORDER_CANCELLED', 'SUCCESS', { orderId: order_id, symbol: order.symbol, quantity: order.quantity }, req);
+
     console.log(`[ORDERS] Cancelled: ${order_id}`);
     res.json({ success: true, message: `Order ${order_id} cancelled successfully` });
   } catch (err) {
     console.error('[ORDERS] Cancel error:', err.message);
+    writeAuditLog(req.body.user_id, 'ORDER_CANCELLED', 'FAILURE', { error: err.message, orderId: req.body.order_id }, req);
     res.status(500).json({ detail: 'Failed to cancel order' });
   }
 });
@@ -116,6 +127,7 @@ router.post('/gtt/cancel', async (req, res) => {
     if (!order) return res.status(404).json({ detail: 'GTT order not found or already triggered' });
 
     if (user_id && order.userId !== user_id) {
+      writeAuditLog(user_id, 'GTT_CANCELLED', 'FAILURE', { reason: 'Unauthorized access', orderId: order_id }, req);
       return res.status(403).json({ detail: 'Unauthorized' });
     }
 
@@ -123,9 +135,12 @@ router.post('/gtt/cancel', async (req, res) => {
     order.rejectReason = 'GTT cancelled by user';
     await order.save();
 
+    writeAuditLog(order.userId, 'GTT_CANCELLED', 'SUCCESS', { orderId: order_id, symbol: order.symbol }, req);
+
     res.json({ success: true, message: `GTT order ${order_id} cancelled` });
   } catch (err) {
     console.error('[ORDERS] GTT cancel error:', err.message);
+    writeAuditLog(req.body.user_id, 'GTT_CANCELLED', 'FAILURE', { error: err.message, orderId: req.body.order_id }, req);
     res.status(500).json({ detail: 'Failed to cancel GTT order' });
   }
 });

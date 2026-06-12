@@ -1,6 +1,8 @@
 import express from 'express';
 import BrokerGateway from '../services/BrokerGateway.js';
 import MarketDataService from '../services/MarketDataService.js';
+import { incrementOrderExecuted, incrementWalletMutation } from '../middleware/metrics.js';
+import { cacheEndpoint } from '../middleware/cache.js';
 
 const router = express.Router();
 
@@ -106,7 +108,7 @@ router.get('/theme/:themeName', (req, res) => {
   res.json({ stocks });
 });
 
-router.get('/stock/:tickerId', async (req, res) => {
+router.get('/stock/:tickerId', cacheEndpoint(10), async (req, res) => {
   try {
     const { tickerId } = req.params;
     const { range_type } = req.query;
@@ -360,6 +362,7 @@ router.post('/broker/order', async (req, res) => {
       wallet.usedMargin += orderValue;
       wallet.updatedAt = Date.now();
       await wallet.save();
+      incrementWalletMutation();
 
       // Record wallet transaction
       await WalletTransaction.create({
@@ -400,6 +403,7 @@ router.post('/broker/order', async (req, res) => {
         wallet.usedMargin = Math.max(0, wallet.usedMargin - orderValue);
         wallet.updatedAt = Date.now();
         await wallet.save();
+        incrementWalletMutation();
 
         await WalletTransaction.create({
           userId: activeUser,
@@ -423,6 +427,7 @@ router.post('/broker/order', async (req, res) => {
       wallet.usedMargin = Math.max(0, wallet.usedMargin - orderValue);
       wallet.updatedAt = Date.now();
       await wallet.save();
+      incrementWalletMutation();
 
       await WalletTransaction.create({
         userId: activeUser,
@@ -442,6 +447,7 @@ router.post('/broker/order', async (req, res) => {
       newBalance: wallet.balance
     });
 
+    incrementOrderExecuted();
     res.json({
       success: true,
       message: orderResult.message,

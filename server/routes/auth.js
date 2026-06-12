@@ -2,18 +2,37 @@ import express from 'express';
 import { ethers } from 'ethers';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
+import { OAuth2Client } from 'google-auth-library';
 import { JWT_SECRET, isProd } from '../utils/secrets.js';
 
 const router = express.Router();
 
 import User from '../models/User.js';
+import UserSession from '../models/Session.js';
+import { requireAuth } from '../middleware/auth.js';
+import { requestSanitizer } from '../middleware/security.js';
+import { writeAuditLog } from '../middleware/audit.js';
+import crypto from 'crypto';
+
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
+const googleClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
+
+router.use(requestSanitizer);
+
+const hashToken = (token) => crypto.createHash('sha256').update(token).digest('hex');
 
 const generateNonce = () => {
   return `Sign this message to verify you own this wallet. Nonce: ${Math.floor(Math.random() * 1000000)}`;
 };
 
-const issueToken = (user) => jwt.sign(
+const issueAccessToken = (user) => jwt.sign(
   { id: user._id, username: user.username, walletAddress: user.walletAddress, isPremium: user.isPremium },
+  JWT_SECRET,
+  { expiresIn: '15m' }
+);
+
+const issueRefreshToken = (user, familyId) => jwt.sign(
+  { id: user._id, familyId },
   JWT_SECRET,
   { expiresIn: '7d' }
 );
@@ -71,17 +90,50 @@ router.post('/login', async (req, res) => {
 
     if (user && user.passwordHash) {
       const ok = await bcrypt.compare(password, user.passwordHash);
-      if (!ok) return res.status(401).json({ detail: 'Invalid username or password' });
+      if (!ok) {
+        writeAuditLog(user._id, 'LOGIN_FAILED', 'FAILURE', { reason: 'Incorrect password', username: ident }, req);
+        return res.status(401).json({ detail: 'Invalid username or password' });
+      }
 
-      const token = issueToken(user);
-      return res.json({ success: true, user_id: user._id, token });
+      // 1. Session and token parameters
+      const familyId = crypto.randomUUID();
+      const accessToken = issueAccessToken(user);
+      const refreshToken = issueRefreshToken(user, familyId);
+
+      // 2. Track device metadata
+      const userAgent = req.headers['user-agent'] || 'unknown';
+      let deviceType = 'desktop';
+      if (/mobile/i.test(userAgent)) deviceType = 'mobile';
+      else if (/tablet/i.test(userAgent)) deviceType = 'tablet';
+
+      // 3. Save Session
+      await UserSession.create({
+        userId: user._id,
+        familyId,
+        tokenHash: hashToken(refreshToken),
+        ipAddress: req.ip || req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown',
+        userAgent,
+        deviceType,
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
+      });
+
+      writeAuditLog(user._id, 'LOGIN_SUCCESS', 'SUCCESS', { provider: 'local', deviceType }, req);
+
+      return res.json({ 
+        success: true, 
+        user_id: user._id, 
+        token: accessToken, 
+        refreshToken 
+      });
     }
 
     // Documented demo account — allowed ONLY outside production. No prod backdoor.
     if (!isProd && ident === 'demo' && password === 'demo123') {
+      writeAuditLog('nexus-sim-user', 'LOGIN_SUCCESS', 'SUCCESS', { provider: 'demo_bypass' }, req);
       return res.json({ success: true, user_id: 'nexus-sim-user' });
     }
 
+    writeAuditLog(null, 'LOGIN_FAILED', 'FAILURE', { reason: 'User not found', username: ident }, req);
     return res.status(401).json({ detail: 'Invalid username or password' });
   } catch (err) {
     console.error('Error in /login:', err);
@@ -89,7 +141,103 @@ router.post('/login', async (req, res) => {
   }
 });
 
-router.get('/me', async (req, res) => {
+// ═══════════════════════════════════════════════════════════
+//  POST /api/auth/refresh-token — Rotate Access/Refresh Token
+// ═══════════════════════════════════════════════════════════
+router.post('/refresh-token', async (req, res) => {
+  try {
+    const { refresh_token } = req.body;
+    if (!refresh_token) {
+      return res.status(400).json({ detail: 'Missing refresh token' });
+    }
+
+    const hashedToken = hashToken(refresh_token);
+
+    // 1. Find session matching this token hash
+    const session = await UserSession.findOne({ tokenHash: hashedToken });
+
+    if (session) {
+      // Session exists! Check expiry
+      if (session.expiresAt < new Date()) {
+        await UserSession.deleteOne({ _id: session._id });
+        return res.status(401).json({ detail: 'Session expired' });
+      }
+
+      // Valid session. Let's rotate tokens!
+      const user = await User.findById(session.userId);
+      if (!user) {
+        return res.status(401).json({ detail: 'User not found' });
+      }
+
+      const newAccessToken = issueAccessToken(user);
+      const newRefreshToken = issueRefreshToken(user, session.familyId);
+
+      // Update session with new token hash
+      session.tokenHash = hashToken(newRefreshToken);
+      session.lastActivity = new Date();
+      session.expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // extension
+      await session.save();
+
+      writeAuditLog(user._id, 'TOKEN_REFRESH', 'SUCCESS', { familyId: session.familyId }, req);
+
+      return res.json({
+        token: newAccessToken,
+        refreshToken: newRefreshToken
+      });
+    }
+
+    // 2. Token not found. Is it a replay attack?
+    // Decode the token to see if it has a familyId (which indicates it's a validly signed token but already rotated/revoked)
+    try {
+      const decoded = jwt.verify(refresh_token, JWT_SECRET);
+      if (decoded && decoded.familyId) {
+        // Replay/suspicious attempt detected! Revoke all sessions in the family immediately
+        const deletedResult = await UserSession.deleteMany({ familyId: decoded.familyId });
+        writeAuditLog(
+          decoded.id, 
+          'SUSPICIOUS_ACTIVITY', 
+          'SUSPICIOUS', 
+          { 
+            reason: 'Refresh token reuse / Replay attack', 
+            familyId: decoded.familyId,
+            revokedSessionsCount: deletedResult.deletedCount 
+          }, 
+          req
+        );
+        return res.status(401).json({ detail: 'Token revoked: Security breach suspected' });
+      }
+    } catch (err) {
+      // Token signature was invalid or expired, just return unauthenticated
+    }
+
+    return res.status(401).json({ detail: 'Invalid refresh token' });
+  } catch (err) {
+    console.error('Error in /refresh-token:', err);
+    res.status(500).json({ detail: 'Internal server error' });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+//  POST /api/auth/logout — Revoke current session
+// ═══════════════════════════════════════════════════════════
+router.post('/logout', async (req, res) => {
+  try {
+    const { refresh_token } = req.body;
+    if (refresh_token) {
+      const hashedToken = hashToken(refresh_token);
+      const session = await UserSession.findOneAndDelete({ tokenHash: hashedToken });
+      if (session) {
+        writeAuditLog(session.userId, 'LOGOUT', 'SUCCESS', { familyId: session.familyId }, req);
+      }
+    }
+    res.json({ success: true, message: 'Logged out successfully' });
+  } catch (err) {
+    console.error('Error in /logout:', err);
+    res.status(500).json({ detail: 'Internal server error' });
+  }
+});
+
+router.get('/me', requireAuth, async (req, res) => {
   const { user_id } = req.query;
   const DEMO_IDS = ['mock_web2_user', 'nexus-sim-user'];
 
@@ -191,6 +339,95 @@ router.post('/verify', async (req, res) => {
   } catch (error) {
     console.error('Error verifying signature:', error);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+//  Google OAuth — verifies a Google ID token, then find-or-create.
+//  The client sends the `credential` (a Google ID/JWT token) from
+//  the Google Identity Services button. We verify it server-side
+//  against Google's keys — never trust the client's claims directly.
+// ═══════════════════════════════════════════════════════════
+router.post('/google', async (req, res) => {
+  try {
+    const { credential } = req.body;
+    if (!credential) {
+      return res.status(400).json({ detail: 'Missing Google credential' });
+    }
+    if (!googleClient) {
+      return res.status(503).json({ detail: 'Google sign-in is not configured on the server' });
+    }
+
+    // Verify the ID token against Google. Throws if invalid/expired/wrong audience.
+    const ticket = await googleClient.verifyIdToken({
+      idToken: credential,
+      audience: GOOGLE_CLIENT_ID,
+    });
+    const payload = ticket.getPayload();
+    if (!payload || !payload.email) {
+      return res.status(401).json({ detail: 'Could not verify Google account' });
+    }
+
+    const googleId = payload.sub;
+    const email = String(payload.email).toLowerCase().trim();
+    const fullName = payload.name || '';
+    const avatar = payload.picture || '';
+
+    // 1) Match an existing Google account, else 2) link to an existing
+    //    email account, else 3) create a fresh Google-backed user.
+    let user = await User.findOne({ googleId });
+
+    if (!user) {
+      user = await User.findOne({ email });
+      if (user) {
+        // Link Google to a pre-existing email/password account.
+        user.googleId = googleId;
+        if (!user.avatar) user.avatar = avatar;
+        if (!user.full_name) user.full_name = fullName;
+        await user.save();
+      }
+    }
+
+    if (!user) {
+      // Derive a unique username from the email local-part.
+      const base = email.split('@')[0].replace(/[^a-z0-9_]/g, '') || 'user';
+      let username = base;
+      let suffix = 0;
+      // eslint-disable-next-line no-await-in-loop
+      while (await User.findOne({ username })) {
+        suffix += 1;
+        username = `${base}${suffix}`;
+      }
+
+      user = await User.create({
+        username,
+        email,
+        full_name: fullName,
+        avatar,
+        googleId,
+        authProvider: 'google',
+        kyc_status: 'UNVERIFIED',
+        isPremium: false,
+      });
+    }
+
+    const token = issueToken(user);
+    return res.json({
+      success: true,
+      user_id: user._id,
+      token,
+      user: {
+        id: user._id,
+        username: user.username,
+        email: user.email,
+        full_name: user.full_name,
+        avatar: user.avatar,
+        isPremium: !!user.isPremium,
+      },
+    });
+  } catch (err) {
+    console.error('Error in /google:', err);
+    return res.status(401).json({ detail: 'Google authentication failed' });
   }
 });
 

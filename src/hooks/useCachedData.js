@@ -49,13 +49,13 @@ export default function useCachedData(url, { ttl = 60000, enabled = true, cacheK
         setData(cached);
         setIsLoading(false);
         // We still fetch in background if we want, but since TTL handles expiration, we can just use cache.
-        if (process.env.NODE_ENV === 'development') {
+        if (import.meta.env.DEV) {
            console.log(`[Cache HIT] ${finalCacheKey}`);
         }
         return;
       }
       
-      if (process.env.NODE_ENV === 'development') {
+      if (import.meta.env.DEV) {
          console.log(`[Cache MISS] ${finalCacheKey} - Fetching...`);
       }
 
@@ -68,7 +68,7 @@ export default function useCachedData(url, { ttl = 60000, enabled = true, cacheK
         const response = await axios.get(url, { signal: abortController.signal });
         const endTime = performance.now();
         
-        if (process.env.NODE_ENV === 'development') {
+        if (import.meta.env.DEV) {
            console.log(`[Performance] ${finalCacheKey} took ${(endTime - startTime).toFixed(2)}ms`);
         }
         

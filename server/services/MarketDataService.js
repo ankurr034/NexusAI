@@ -1,5 +1,6 @@
 import YahooFinance from 'yahoo-finance2';
 import { createLogger } from '../utils/logger.js';
+import { invalidateCachePattern } from '../middleware/cache.js';
 
 const log = createLogger('MarketData');
 const yahooFinance = new YahooFinance({ suppressNotices: ['yahooSurvey'] });
@@ -191,7 +192,12 @@ class MarketDataService {
           source: 'yahoo',
           marketState: q.marketState || 'UNKNOWN'
         });
+        invalidateCachePattern(`cache:/api/stock/${originalSymbol}*`).catch(() => {});
       });
+
+      if (quotes.length > 0) {
+        invalidateCachePattern('cache:/api/heatmap*').catch(() => {});
+      }
 
       this.onFetchSuccess();
     } catch (err) {

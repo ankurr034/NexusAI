@@ -42,6 +42,7 @@ paperOrderSchema.index({ userId: 1, createdAt: -1 }); // Quick sorting for order
 paperOrderSchema.index({ status: 1 });                 // Order state lookups
 paperOrderSchema.index({ symbol: 1 });                 // Symbol aggregation & statistics
 paperOrderSchema.index({ userId: 1, status: 1 });       // Fetching user's active/pending trades
+paperOrderSchema.index({ userId: 1, status: 1, createdAt: -1 }); // Optimized filter + sort query path
 
 const riskEventSchema = new mongoose.Schema({
   userId: { type: String, required: true },

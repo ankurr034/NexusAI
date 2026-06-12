@@ -10,12 +10,10 @@ let JWT_SECRET = process.env.JWT_SECRET;
 
 if (!JWT_SECRET || JWT_SECRET.trim() === '') {
   if (isProd) {
-    // eslint-disable-next-line no-console
     console.error('FATAL: JWT_SECRET is not set. Refusing to start in production.');
     process.exit(1);
   }
   JWT_SECRET = 'nexus_dev_only_insecure_secret_change_me';
-  // eslint-disable-next-line no-console
   console.warn('[secrets] JWT_SECRET not set — using an INSECURE development fallback. Do not deploy like this.');
 }
 

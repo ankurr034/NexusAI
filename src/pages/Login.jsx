@@ -14,7 +14,7 @@ const Login = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const { login } = useUser();
+  const { login, loginWithWallet } = useUser();
   const navigate = useNavigate();
   const toast = useToast();
 

@@ -72,6 +72,12 @@ axiosInstance.interceptors.request.use(async (config) => {
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
+  
+  const userToken = localStorage.getItem('nexus_jwt');
+  if (userToken) {
+    config.headers['X-User-Token'] = `Bearer ${userToken}`;
+  }
+  
   return config;
 });
 

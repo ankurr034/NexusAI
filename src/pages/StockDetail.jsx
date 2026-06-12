@@ -11,42 +11,68 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   LineChart, Line, ComposedChart, Legend, BarChart, Bar, PieChart, Pie, Cell, Brush
 } from 'recharts';
-import { AdvancedRealTimeChart } from "react-ts-tradingview-widgets";
 import useSocket from '../hooks/useSocket';
 import useCachedData from '../hooks/useCachedData';
 import ErrorBoundary from '../components/ErrorBoundary';
 import { formatTradingViewSymbol } from '../utils/symbolFormatter';
 
 const TVWidgetWrapper = React.memo(({ tvSymbol }) => {
-  const chartOptions = React.useMemo(() => ({
-    theme: "dark",
-    autosize: true,
-    allow_symbol_change: false,
-    hide_side_toolbar: false,
-    enable_publishing: false,
-    hide_top_toolbar: false,
-    save_image: false,
-    toolbar_bg: "#0f172a",
-    studies: [
-      "Volume@tv-basicstudies",
-      "MASimple@tv-basicstudies"
-    ]
-  }), []);
+  const containerId = React.useId().replace(/:/g, '_');
 
   useEffect(() => {
-    console.log("TradingView Mounted:", tvSymbol);
-    return () => console.log("TradingView Unmounted:", tvSymbol);
-  }, [tvSymbol]);
+    let tvWidget = null;
+    let isMounted = true;
 
-  // Using a stable key strictly bound to tvSymbol prevents TradingView from 
-  // keeping stale iframes across navigations, while React.memo prevents
-  // parent rerenders (from live price ticks) from touching this component.
+    const initWidget = () => {
+      if (typeof window !== 'undefined' && window.TradingView && isMounted) {
+        tvWidget = new window.TradingView.widget({
+          symbol: tvSymbol,
+          theme: "dark",
+          autosize: true,
+          allow_symbol_change: false,
+          hide_side_toolbar: false,
+          enable_publishing: false,
+          hide_top_toolbar: false,
+          save_image: false,
+          toolbar_bg: "#0f172a",
+          studies: [
+            "Volume@tv-basicstudies",
+            "MASimple@tv-basicstudies"
+          ],
+          container_id: containerId,
+          width: '100%',
+          height: '100%'
+        });
+      }
+    };
+
+    if (!document.getElementById('tradingview-tv-script')) {
+      const script = document.createElement('script');
+      script.id = 'tradingview-tv-script';
+      script.src = 'https://s3.tradingview.com/tv.js';
+      script.type = 'text/javascript';
+      script.async = true;
+      script.onload = initWidget;
+      document.head.appendChild(script);
+    } else {
+      const checkInterval = setInterval(() => {
+        if (window.TradingView) {
+          clearInterval(checkInterval);
+          initWidget();
+        }
+      }, 100);
+      return () => clearInterval(checkInterval);
+    }
+
+    return () => {
+      isMounted = false;
+    };
+  }, [tvSymbol, containerId]);
+
   return (
-    <AdvancedRealTimeChart
-      key={tvSymbol}
-      symbol={tvSymbol}
-      {...chartOptions}
-    />
+    <div className="w-full h-full relative">
+      <div id={containerId} className="w-full h-full" />
+    </div>
   );
 }, (prevProps, nextProps) => prevProps.tvSymbol === nextProps.tvSymbol);
 

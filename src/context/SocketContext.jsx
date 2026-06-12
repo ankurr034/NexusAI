@@ -21,14 +21,18 @@ export const SocketProvider = ({ children }) => {
     
     const connectSocket = () => {
       const token = localStorage.getItem('broker_access_token');
+      const userToken = localStorage.getItem('nexus_jwt');
       const socketInstance = io(API_BASE_URL || 'http://localhost:8000', {
         transports: ['websocket'],
         reconnection: false, // We'll handle custom exponential backoff
-        auth: { token: token || '' }
+        auth: { 
+          token: token || '',
+          userToken: userToken || ''
+        }
       });
 
       socketInstance.on('connect', () => {
-        if (process.env.NODE_ENV === 'development') console.log('[Socket TELEMETRY] Connected successfully');
+        if (import.meta.env.DEV) console.log('[Socket TELEMETRY] Connected successfully');
         setIsConnected(true);
         reconnectAttempts.current = 0;
         reconnectDelay = 1000;
@@ -42,7 +46,7 @@ export const SocketProvider = ({ children }) => {
       });
 
       socketInstance.on('disconnect', () => {
-        if (process.env.NODE_ENV === 'development') console.log('[Socket TELEMETRY] Disconnected');
+        if (import.meta.env.DEV) console.log('[Socket TELEMETRY] Disconnected');
         setIsConnected(false);
         stopHeartbeat();
         handleReconnect();
@@ -60,7 +64,7 @@ export const SocketProvider = ({ children }) => {
       reconnectDelay = Math.min(reconnectDelay * 1.5, 30000);
       const finalDelay = reconnectDelay + jitter;
       
-      if (process.env.NODE_ENV === 'development') {
+      if (import.meta.env.DEV) {
         console.log(`[Socket TELEMETRY] Reconnecting in ${Math.round(finalDelay)}ms (Attempt ${reconnectAttempts.current})`);
       }
       
@@ -76,7 +80,7 @@ export const SocketProvider = ({ children }) => {
       heartbeatTimer.current = setInterval(() => {
         if (document.visibilityState === 'visible' && instance.connected) {
            instance.emit('ping');
-           if (process.env.NODE_ENV === 'development') console.log('[Socket TELEMETRY] Heartbeat sent');
+           if (import.meta.env.DEV) console.log('[Socket TELEMETRY] Heartbeat sent');
         }
       }, 25000);
     };
@@ -87,14 +91,14 @@ export const SocketProvider = ({ children }) => {
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'hidden') {
-         if (process.env.NODE_ENV === 'development') console.log('[Socket TELEMETRY] Tab inactive, pausing heartbeat');
+         if (import.meta.env.DEV) console.log('[Socket TELEMETRY] Tab inactive, pausing heartbeat');
       } else {
-         if (process.env.NODE_ENV === 'development') console.log('[Socket TELEMETRY] Tab active, resuming heartbeat');
+         if (import.meta.env.DEV) console.log('[Socket TELEMETRY] Tab active, resuming heartbeat');
       }
     };
     
     const handleForceReconnect = () => {
-       if (process.env.NODE_ENV === 'development') console.log('[Socket TELEMETRY] Forced reconnect triggered by auth change');
+       if (import.meta.env.DEV) console.log('[Socket TELEMETRY] Forced reconnect triggered by auth change');
        if (socketRef.current?.connected) {
           socketRef.current.disconnect();
           // The disconnect event handler will automatically handle the reconnect loop
@@ -122,7 +126,7 @@ export const SocketProvider = ({ children }) => {
     const count = subscriptions.current.get(ticker) || 0;
     subscriptions.current.set(ticker, count + 1);
     
-    if (process.env.NODE_ENV === 'development') {
+    if (import.meta.env.DEV) {
        console.log(`[Socket TELEMETRY] subscribe(${ticker}) | RefCount: ${count + 1} | Active Subs: ${subscriptions.current.size}`);
     }
     
@@ -136,13 +140,13 @@ export const SocketProvider = ({ children }) => {
     const count = subscriptions.current.get(ticker) || 0;
     if (count <= 1) {
        subscriptions.current.delete(ticker);
-       if (process.env.NODE_ENV === 'development') console.log(`[Socket TELEMETRY] unsubscribe(${ticker}) | RefCount: 0 (Emitting to server) | Active Subs: ${subscriptions.current.size}`);
+       if (import.meta.env.DEV) console.log(`[Socket TELEMETRY] unsubscribe(${ticker}) | RefCount: 0 (Emitting to server) | Active Subs: ${subscriptions.current.size}`);
        if (socketRef.current?.connected) {
          socketRef.current.emit('unsubscribe_stock', ticker);
        }
     } else {
        subscriptions.current.set(ticker, count - 1);
-       if (process.env.NODE_ENV === 'development') console.log(`[Socket TELEMETRY] unsubscribe(${ticker}) | RefCount: ${count - 1}`);
+       if (import.meta.env.DEV) console.log(`[Socket TELEMETRY] unsubscribe(${ticker}) | RefCount: ${count - 1}`);
     }
   };
 

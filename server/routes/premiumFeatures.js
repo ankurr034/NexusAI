@@ -4,6 +4,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { requirePremium } from '../middleware/auth.js';
 import MarketDataService from '../services/MarketDataService.js';
 import { PaperPosition, PaperOrder } from '../models/PaperTrading.js';
+import { cacheEndpoint } from '../middleware/cache.js';
 
 const router = express.Router();
 
@@ -308,7 +309,7 @@ router.get('/microstructure/:symbol', (req, res) => {
 });
 
 // 4. Price Targets
-router.get('/stock/targets/:symbol', async (req, res) => {
+router.get('/stock/targets/:symbol', cacheEndpoint(30), async (req, res) => {
   const { symbol } = req.params;
   const current_price = MarketDataService.getCurrentPrice(symbol) || 100.0;
 

@@ -136,6 +136,25 @@ export const UserProvider = ({ children }) => {
     return { success: true };
   };
 
+  const loginWithGoogle = async (credential) => {
+    try {
+      const res = await axios.post(`${API_BASE_URL}/api/auth/google`, { credential });
+      localStorage.setItem('nexus_user_id', res.data.user_id);
+      if (res.data.token) localStorage.setItem('nexus_jwt', res.data.token);
+      await fetchUserData(res.data.user_id);
+      return { success: true };
+    } catch (err) {
+      // Mock Google login for offline frontend simulation when backend is down.
+      if (!err.response) {
+        const dummyId = 'nexus-sim-user';
+        localStorage.setItem('nexus_user_id', dummyId);
+        await fetchUserData(dummyId);
+        return { success: true };
+      }
+      return { success: false, error: err.response?.data?.detail || 'Google sign-in failed' };
+    }
+  };
+
   const register = async (userData) => {
     try {
       await axios.post(`${API_BASE_URL}/api/auth/register`, userData);
@@ -196,9 +215,10 @@ export const UserProvider = ({ children }) => {
     loading, 
     isLiveMode, 
     brokerConnected, 
-    login, 
+    login,
     loginWithWallet,
-    register, 
+    loginWithGoogle,
+    register,
     logout, 
     toggleMode,
     upgradeToPremium,

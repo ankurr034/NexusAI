@@ -28,7 +28,7 @@ export default class ErrorBoundary extends React.Component {
             Module Failure: {this.props.componentName || 'Component'}
           </div>
           <p className="text-xs text-red-400/70">The rest of the dashboard remains operational.</p>
-          {process.env.NODE_ENV === 'development' && (
+          {import.meta.env.DEV && (
             <details className="text-left text-[10px] text-red-300 mt-2 p-3 bg-black/40 rounded-lg overflow-auto max-h-40 w-full font-mono">
                <summary className="cursor-pointer mb-1 font-bold">Debug Stack Trace</summary>
                {this.state.error?.toString()}

@@ -12,6 +12,11 @@ const UserSchema = new mongoose.Schema({
   walletAddress: { type: String, unique: true, sparse: true },
   nonce: { type: String, default: null },
 
+  // ── Google OAuth identity (optional — only set for Google-based signups) ──
+  googleId: { type: String, unique: true, sparse: true },
+  avatar: { type: String, default: '' },
+  authProvider: { type: String, enum: ['local', 'google', 'wallet'], default: 'local' },
+
   account_mode: { type: String, enum: ['demo', 'live'], default: 'demo' },
   isPremium: { type: Boolean, default: false },
   subscription_plan: { type: String, default: 'Free' },

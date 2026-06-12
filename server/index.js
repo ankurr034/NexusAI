@@ -2,6 +2,7 @@
 // (ES module imports are hoisted, so this must be the very first import).
 import 'dotenv/config';
 import express from 'express';
+import jwt from 'jsonwebtoken';
 import cors from 'cors';
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
@@ -11,6 +12,8 @@ import helmet from 'helmet';
 import mongoSanitize from 'express-mongo-sanitize';
 import rateLimit from 'express-rate-limit';
 import logger, { createLogger } from './utils/logger.js';
+import { trackMetricsMiddleware, getPrometheusMetrics, incrementActiveWebsockets, decrementActiveWebsockets, incrementSocketReconnect } from './middleware/metrics.js';
+import { cacheEndpoint } from './middleware/cache.js';
 
 // Routes
 import predictionRoutes from './routes/predictions.js';
@@ -117,11 +120,73 @@ const IS_TIMER_LEADER = String(INSTANCE_ID) === '0';
 //  SECURITY MIDDLEWARE STACK
 // ═══════════════════════════════════════════════════════════
 
-// 1. Helmet: HTTP security headers
+// 1. Helmet: HTTP security headers with strong Content Security Policy (CSP)
 app.use(helmet({
-  contentSecurityPolicy: false,  // CSP would break our SPA
-  crossOriginEmbedderPolicy: false
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: [
+        "'self'", 
+        "'unsafe-inline'", // for inline script injections like TradingView or dynamic script components
+        "'unsafe-eval'",   // some dynamic compiling libraries require this, e.g. lodash template
+        "https://s3.tradingview.com", 
+        "https://checkout.razorpay.com", 
+        "https://accounts.google.com"
+      ],
+      styleSrc: [
+        "'self'", 
+        "'unsafe-inline'", 
+        "https://fonts.googleapis.com"
+      ],
+      fontSrc: [
+        "'self'", 
+        "https://fonts.gstatic.com", 
+        "data:"
+      ],
+      imgSrc: [
+        "'self'", 
+        "data:", 
+        "https://*.tradingview.com", 
+        "https://lh3.googleusercontent.com" // Google profiles
+      ],
+      connectSrc: [
+        "'self'", 
+        "ws://localhost:8000",
+        "wss://localhost:8000",
+        "ws://127.0.0.1:8000",
+        "wss://127.0.0.1:8000",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+        "https://*.infura.io",
+        "https://api.razorpay.com",
+        "https://*.tradingview.com",
+        "wss://*.tradingview.com"
+      ],
+      frameSrc: [
+        "'self'", 
+        "https://checkout.razorpay.com", 
+        "https://s3.tradingview.com",
+        "https://*.tradingview.com",
+        "https://accounts.google.com"
+      ],
+      objectSrc: ["'none'"],
+      upgradeInsecureRequests: [],
+    }
+  },
+  crossOriginEmbedderPolicy: false,
+  crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
+  hsts: {
+    maxAge: 31536000,
+    includeSubDomains: true,
+    preload: true
+  }
 }));
+
+// Add Custom Permissions-Policy Header
+app.use((req, res, next) => {
+  res.setHeader("Permissions-Policy", "geolocation=(), microphone=(), camera=()");
+  next();
+});
 
 // 2. CORS
 // Production allows ONLY the explicit origins in FRONTEND_URL (comma-separated).
@@ -210,6 +275,9 @@ const tradeLimiter = rateLimit({
 app.use('/api/broker/order', tradeLimiter);
 app.use('/api/orders/cancel', tradeLimiter);
 
+// Global Request Telemetry Scraper Middleware
+app.use(trackMetricsMiddleware);
+
 // ═══════════════════════════════════════════════════════════
 //  REQUEST TIMING & LOGGING MIDDLEWARE
 // ═══════════════════════════════════════════════════════════
@@ -222,6 +290,21 @@ app.use((req, res, next) => {
     }
   });
   next();
+});
+
+// ═══════════════════════════════════════════════════════════
+//  METRICS SCRAPER ENDPOINT
+// ═══════════════════════════════════════════════════════════
+app.get('/api/metrics', (req, res) => {
+  // Securing endpoint in production if token is configured
+  if (process.env.NODE_ENV === 'production' && process.env.METRICS_TOKEN) {
+    const token = req.headers['x-metrics-token'] || req.query.token;
+    if (token !== process.env.METRICS_TOKEN) {
+      return res.status(403).send('Forbidden: Invalid metrics token');
+    }
+  }
+  res.setHeader('Content-Type', 'text/plain; version=0.0.4');
+  res.send(getPrometheusMetrics());
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -318,7 +401,7 @@ app.use('/api', marketRoutes);
 app.use('/api', featuresRoutes);
 
 // Analytics REST Endpoint (before premium routes to avoid middleware interception)
-app.get('/api/heatmap', (req, res) => {
+app.get('/api/heatmap', cacheEndpoint(10), (req, res) => {
   res.json(analyticsEngine.getFullState());
 });
 
@@ -339,15 +422,15 @@ const connectDB = async (retries = 5) => {
         heartbeatFrequencyMS: 10000
       });
       log.info('Connected to MongoDB');
-      return;
+      return true;
     } catch (err) {
       log.error(`MongoDB connection attempt ${i + 1}/${retries} failed`, { error: err.message });
       if (i < retries - 1) await new Promise(r => setTimeout(r, 3000));
     }
   }
   log.error('Failed to connect to MongoDB after all retries');
+  return false;
 };
-connectDB();
 
 // ═══════════════════════════════════════════════════════════
 //  WEBSOCKET SETUP — Production Hardened
@@ -360,9 +443,34 @@ const wsMetrics = {
   subscriptions: new Map()  // Track subscription counts
 };
 
+import { JWT_SECRET } from './utils/secrets.js';
+
+io.use((socket, next) => {
+  const token = socket.handshake.auth?.userToken || socket.handshake.headers?.['x-user-token'] || socket.handshake.query?.token;
+  
+  if (!token) {
+    // Development bypass for demo client
+    const userId = socket.handshake.query?.user_id;
+    if (process.env.NODE_ENV !== 'production' && (userId === 'mock_web2_user' || userId === 'nexus-sim-user')) {
+      return next();
+    }
+    return next(new Error('Authentication error: Platform token required'));
+  }
+  
+  const tokenStr = token.startsWith('Bearer ') ? token.split(' ')[1] : token;
+  try {
+    const decoded = jwt.verify(tokenStr, JWT_SECRET);
+    socket.user = decoded;
+    next();
+  } catch (err) {
+    return next(new Error('Authentication error: Invalid or expired token'));
+  }
+});
+
 io.on('connection', (socket) => {
   wsMetrics.totalConnections++;
   wsMetrics.currentConnections++;
+  incrementActiveWebsockets();
   wsLog.info(`Client connected: ${socket.id}`, { clients: wsMetrics.currentConnections });
 
   // Reconnection throttling
@@ -371,6 +479,9 @@ io.on('connection', (socket) => {
   const now = Date.now();
   if (now - reconnects.lastTime < 1000) {
     reconnects.count++;
+    if (reconnects.count > 1) {
+      incrementSocketReconnect();
+    }
     if (reconnects.count > 10) {
       wsLog.warn('Reconnection flood detected', { ip: clientIp, count: reconnects.count });
       socket.disconnect(true);
@@ -420,6 +531,7 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', (reason) => {
     wsMetrics.currentConnections--;
+    decrementActiveWebsockets();
     socketSubs.clear();
     wsLog.info(`Client disconnected: ${socket.id}`, { reason, clients: wsMetrics.currentConnections });
   });
@@ -567,10 +679,21 @@ app.use((err, req, res, next) => {
 //  START SERVER
 // ═══════════════════════════════════════════════════════════
 const PORT = process.env.PORT || 8000;
-httpServer.listen(PORT, () => {
-  log.info(`NexusAI Backend running on port ${PORT}`, {
-    env: process.env.NODE_ENV || 'development',
-    mongo: process.env.MONGODB_URI ? 'configured' : 'localhost',
-    tickers: activeTickers.length
+
+const startServer = async () => {
+  const dbReady = await connectDB();
+  if (!dbReady) {
+    log.error('Server startup aborted because MongoDB is unavailable.');
+    process.exit(1);
+  }
+
+  httpServer.listen(PORT, () => {
+    log.info(`NexusAI Backend running on port ${PORT}`, {
+      env: process.env.NODE_ENV || 'development',
+      mongo: process.env.MONGODB_URI ? 'configured' : 'localhost',
+      tickers: activeTickers.length
+    });
   });
-});
+};
+
+startServer();

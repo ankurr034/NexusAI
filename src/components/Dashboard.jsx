@@ -5,7 +5,7 @@ import axios from 'axios';
 import { API_BASE_URL } from '../config';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  LineChart, Line, ComposedChart, Legend
+  LineChart, Line, ComposedChart, Legend, ReferenceArea
 } from 'recharts';
 
 export default function Dashboard() {
@@ -186,8 +186,8 @@ export default function Dashboard() {
                       <YAxis hide domain={[0, 100]} />
                       <Tooltip content={<CustomTooltip />} />
                       {/* RSI Zones mapping */}
-                      <rect x="0" y="0" width="100%" height="30%" fill="#ef4444" fillOpacity="0.05" />
-                      <rect x="0" y="70%" width="100%" height="30%" fill="#10b981" fillOpacity="0.05" />
+                      <ReferenceArea y1={70} y2={100} fill="#ef4444" fillOpacity={0.05} />
+                      <ReferenceArea y1={0} y2={30} fill="#10b981" fillOpacity={0.05} />
                       <Line type="monotone" dataKey="RSI" stroke="#2dd4bf" strokeWidth={2} dot={false} />
                     </LineChart>
                   </ResponsiveContainer>
