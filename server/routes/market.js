@@ -3,6 +3,9 @@ import BrokerGateway from '../services/BrokerGateway.js';
 import MarketDataService from '../services/MarketDataService.js';
 import { incrementOrderExecuted, incrementWalletMutation } from '../middleware/metrics.js';
 import { cacheEndpoint } from '../middleware/cache.js';
+import OrderExecutionMutex from '../utils/orderMutex.js';
+import { IdempotencyManager } from '../utils/idempotency.js';
+import { omsOrderLatency, idempotencyReplayCounter } from '../utils/telemetry.js';
 
 const router = express.Router();
 
@@ -299,106 +302,162 @@ router.post('/broker/refresh', async (req, res) => {
 });
 
 router.post('/broker/order', async (req, res) => {
-  const orderLog = (msg, meta = {}) => console.log(`[OMS] ${msg}`, JSON.stringify(meta));
+  const routeStart = performance.now();
+  const activeUser = req.body.user_id || req.query.user_id || 'nexus-sim-user';
+  
+  // ── Parse order from both flat body and wrapped order_config ──
+  const oc = req.body.order_config || {};
+  const symbol = oc.symbol || req.body.ticker || req.body.symbol || 'RELIANCE';
+  const action = (oc.action || req.body.transaction_type || 'BUY').toUpperCase();
+  const quantity = parseInt(oc.quantity || req.body.quantity || 1, 10);
+  const orderType = (oc.type || oc.orderType || req.body.order_type || 'MARKET').toUpperCase();
+  const price = parseFloat(oc.price || req.body.price || 0);
 
+  // ── Input validation ──
+  if (!symbol || typeof symbol !== 'string' || symbol.length > 20) {
+    return res.status(400).json({ detail: 'Invalid symbol' });
+  }
+  if (!['BUY', 'SELL'].includes(action)) {
+    return res.status(400).json({ detail: 'Action must be BUY or SELL' });
+  }
+  if (!quantity || quantity < 1 || quantity > 10000) {
+    return res.status(400).json({ detail: 'Quantity must be 1-10000' });
+  }
+
+  // ── Idempotency validation ──
+  let idempotencyKey = req.headers['x-idempotency-key'] || req.body.idempotency_key;
+  let isFallbackKey = false;
+  if (!idempotencyKey) {
+    idempotencyKey = `${activeUser}_${symbol}_${action}_${quantity}_${Math.floor(Date.now() / 3000)}`;
+    isFallbackKey = true;
+  }
+
+  let registration;
   try {
-    const { broker_name, access_token, order_config, user_id } = req.body;
-    const activeUser = user_id || req.query.user_id || 'nexus-sim-user';
-
-    // ── Parse order from both flat body and wrapped order_config ──
-    const oc = order_config || {};
-    const symbol = oc.symbol || req.body.ticker || req.body.symbol || 'RELIANCE';
-    const action = (oc.action || req.body.transaction_type || 'BUY').toUpperCase();
-    const quantity = parseInt(oc.quantity || req.body.quantity || 1, 10);
-    const orderType = (oc.type || oc.orderType || req.body.order_type || 'MARKET').toUpperCase();
-    const price = parseFloat(oc.price || req.body.price || 0);
-
-    // ── Input validation ──
-    if (!symbol || typeof symbol !== 'string' || symbol.length > 20) {
-      return res.status(400).json({ detail: 'Invalid symbol' });
-    }
-    if (!['BUY', 'SELL'].includes(action)) {
-      return res.status(400).json({ detail: 'Action must be BUY or SELL' });
-    }
-    if (!quantity || quantity < 1 || quantity > 10000) {
-      return res.status(400).json({ detail: 'Quantity must be 1-10000' });
-    }
-
-    // ── Idempotency check (prevent duplicate orders within 3s) ──
-    const idempotencyKey = `${activeUser}_${symbol}_${action}_${quantity}_${Math.floor(Date.now() / 3000)}`;
-    if (global._orderIdempotencyCache?.has(idempotencyKey)) {
-      return res.status(409).json({ detail: 'Duplicate order detected. Please wait.' });
-    }
-    if (!global._orderIdempotencyCache) global._orderIdempotencyCache = new Set();
-    global._orderIdempotencyCache.add(idempotencyKey);
-    setTimeout(() => global._orderIdempotencyCache?.delete(idempotencyKey), 5000);
-
-    // ── Get live execution price ──
-    const livePrice = price > 0 ? price : MarketDataService.getCurrentPrice(symbol);
-
-    // ── Wallet integration: check & deduct/credit ──
-    const { WalletAccount, WalletTransaction } = await import('../models/Wallet.js');
-    let wallet = await WalletAccount.findOne({ userId: activeUser });
-    if (!wallet) {
-      wallet = await WalletAccount.create({ userId: activeUser, balance: 1000000 });
-    }
-
-    const orderValue = livePrice * quantity;
-
-    if (action === 'BUY') {
-      if (wallet.balance < orderValue) {
-        orderLog('Rejected: Insufficient funds', { userId: activeUser, symbol, orderValue, balance: wallet.balance });
-        return res.status(400).json({
-          detail: 'Insufficient wallet balance',
-          required: orderValue,
-          available: wallet.balance,
-          rejection_reason: 'INSUFFICIENT_FUNDS'
-        });
-      }
-
-      // Deduct from wallet atomically
-      const balanceBefore = wallet.balance;
-      wallet.balance -= orderValue;
-      wallet.usedMargin += orderValue;
-      wallet.updatedAt = Date.now();
-      await wallet.save();
-      incrementWalletMutation();
-
-      // Record wallet transaction
-      await WalletTransaction.create({
-        userId: activeUser,
-        type: 'ORDER_DEBIT',
-        amount: orderValue,
-        balanceBefore,
-        balanceAfter: wallet.balance,
-        status: 'COMPLETED',
-        reference: idempotencyKey,
-        metadata: { symbol, action, quantity, price: livePrice }
-      });
-    }
-
-    // ── Execute through PaperTradingEngine ──
-    const finalOrderConfig = {
+    registration = await IdempotencyManager.checkAndRegister(idempotencyKey, {
+      broker_name: req.body.broker_name,
       symbol,
       action,
       quantity,
-      type: orderType,
-      price: livePrice,
-      isPaperTrade: true,
-      idempotencyKey // share the route's stable key with the gateway dedup layer
-    };
+      orderType,
+      price,
+      user_id: activeUser
+    });
+  } catch (idemErr) {
+    if (idemErr.message === 'MISUSE_ERROR') {
+      return res.status(422).json({ detail: 'Idempotency key misuse: key already used with different payload.' });
+    }
+    throw idemErr;
+  }
 
-    let orderResult;
-    try {
-      orderResult = await BrokerGateway.placeOrder(
-        broker_name || 'Zerodha Kite',
-        access_token || 'MOCK_TOKEN',
-        finalOrderConfig,
-        activeUser
-      );
-    } catch (execErr) {
-      // Rollback wallet on execution failure
+  if (registration.status === 'processing') {
+    return res.status(409).json({ detail: 'Order execution is currently in progress. Please wait.' });
+  }
+
+  if (registration.status === 'completed') {
+    res.setHeader('X-Cache-Replayed', 'true');
+    console.log(`[IDEMPOTENCY] Replaying response for key: ${idempotencyKey}`);
+    idempotencyReplayCounter.inc();
+    return res.status(registration.statusCode || 200).json(registration.response);
+  }
+
+  let resultPayload;
+  let resultStatus = 200;
+
+  try {
+    // Wrap entire critical section inside the per-user serialization mutex
+    await OrderExecutionMutex.acquireAndExecute(activeUser, async (lockAcquiredTime) => {
+      const orderLog = (msg, meta = {}) => console.log(`[OMS] ${msg}`, JSON.stringify({ ...meta, userId: activeUser, lockAcquiredTime }));
+      
+      const livePrice = price > 0 ? price : MarketDataService.getCurrentPrice(symbol);
+      const { WalletAccount, WalletTransaction } = await import('../models/Wallet.js');
+      let wallet = await WalletAccount.findOne({ userId: activeUser });
+      if (!wallet) {
+        wallet = await WalletAccount.create({ userId: activeUser, balance: 1000000 });
+      }
+
+      const orderValue = livePrice * quantity;
+
       if (action === 'BUY') {
+        if (wallet.balance < orderValue) {
+          orderLog('Rejected: Insufficient funds', { symbol, orderValue, balance: wallet.balance });
+          resultStatus = 400;
+          resultPayload = {
+            detail: 'Insufficient wallet balance',
+            required: orderValue,
+            available: wallet.balance,
+            rejection_reason: 'INSUFFICIENT_FUNDS'
+          };
+          return;
+        }
+
+        // Deduct from wallet atomically
+        const balanceBefore = wallet.balance;
+        wallet.balance -= orderValue;
+        wallet.usedMargin += orderValue;
+        wallet.updatedAt = Date.now();
+        await wallet.save();
+        incrementWalletMutation();
+
+        // Record wallet transaction
+        await WalletTransaction.create({
+          userId: activeUser,
+          type: 'ORDER_DEBIT',
+          amount: orderValue,
+          balanceBefore,
+          balanceAfter: wallet.balance,
+          status: 'COMPLETED',
+          reference: idempotencyKey,
+          metadata: { symbol, action, quantity, price: livePrice }
+        });
+      }
+
+      // ── Execute through PaperTradingEngine ──
+      const finalOrderConfig = {
+        symbol,
+        action,
+        quantity,
+        type: orderType,
+        price: livePrice,
+        isPaperTrade: true,
+        idempotencyKey
+      };
+
+      let orderResult;
+      try {
+        orderResult = await BrokerGateway.placeOrder(
+          req.body.broker_name || 'Zerodha Kite',
+          req.body.access_token || 'MOCK_TOKEN',
+          finalOrderConfig,
+          activeUser
+        );
+      } catch (execErr) {
+        // Rollback wallet on execution failure
+        if (action === 'BUY') {
+          wallet.balance += orderValue;
+          wallet.usedMargin = Math.max(0, wallet.usedMargin - orderValue);
+          wallet.updatedAt = Date.now();
+          await wallet.save();
+          incrementWalletMutation();
+
+          await WalletTransaction.create({
+            userId: activeUser,
+            type: 'ORDER_ROLLBACK',
+            amount: orderValue,
+            balanceBefore: wallet.balance - orderValue,
+            balanceAfter: wallet.balance,
+            status: 'COMPLETED',
+            reference: `ROLLBACK_${idempotencyKey}`,
+            metadata: { reason: execErr.message }
+          });
+          orderLog('Rolled back wallet deduction', { symbol, amount: orderValue });
+        }
+        throw execErr;
+      }
+
+      // ── Credit wallet on SELL ──
+      if (action === 'SELL') {
+        const balanceBefore = wallet.balance;
         wallet.balance += orderValue;
         wallet.usedMargin = Math.max(0, wallet.usedMargin - orderValue);
         wallet.updatedAt = Date.now();
@@ -407,59 +466,47 @@ router.post('/broker/order', async (req, res) => {
 
         await WalletTransaction.create({
           userId: activeUser,
-          type: 'ORDER_ROLLBACK',
+          type: 'ORDER_CREDIT',
           amount: orderValue,
-          balanceBefore: wallet.balance - orderValue,
+          balanceBefore,
           balanceAfter: wallet.balance,
           status: 'COMPLETED',
-          reference: `ROLLBACK_${idempotencyKey}`,
-          metadata: { reason: execErr.message }
+          reference: idempotencyKey,
+          metadata: { symbol, action, quantity, price: livePrice }
         });
-        orderLog('Rolled back wallet deduction', { userId: activeUser, symbol, amount: orderValue });
       }
-      throw execErr;
-    }
 
-    // ── Credit wallet on SELL ──
-    if (action === 'SELL') {
-      const balanceBefore = wallet.balance;
-      wallet.balance += orderValue;
-      wallet.usedMargin = Math.max(0, wallet.usedMargin - orderValue);
-      wallet.updatedAt = Date.now();
-      await wallet.save();
-      incrementWalletMutation();
-
-      await WalletTransaction.create({
-        userId: activeUser,
-        type: 'ORDER_CREDIT',
-        amount: orderValue,
-        balanceBefore,
-        balanceAfter: wallet.balance,
-        status: 'COMPLETED',
-        reference: idempotencyKey,
-        metadata: { symbol, action, quantity, price: livePrice }
+      orderLog('Order executed successfully', {
+        symbol, action, quantity,
+        price: livePrice, orderId: orderResult.orderId,
+        newBalance: wallet.balance
       });
-    }
 
-    orderLog('Order executed', {
-      userId: activeUser, symbol, action, quantity,
-      price: livePrice, orderId: orderResult.orderId,
-      newBalance: wallet.balance
+      incrementOrderExecuted();
+      resultStatus = 200;
+      resultPayload = {
+        success: true,
+        message: orderResult.message,
+        order_id: orderResult.orderId,
+        is_paper: true,
+        execution_price: livePrice,
+        order_value: orderValue,
+        balance: wallet.balance
+      };
     });
 
-    incrementOrderExecuted();
-    res.json({
-      success: true,
-      message: orderResult.message,
-      order_id: orderResult.orderId,
-      is_paper: true,
-      execution_price: livePrice,
-      order_value: orderValue,
-      balance: wallet.balance
-    });
-  } catch(e) {
+    // Resolve key with result status and response
+    await IdempotencyManager.resolve(idempotencyKey, resultPayload, resultStatus);
+    omsOrderLatency.observe((performance.now() - routeStart) / 1000);
+    return res.status(resultStatus).json(resultPayload);
+
+  } catch (e) {
     console.error('[OMS] Order execution failed:', e.message);
-    res.status(500).json({
+    // Release key so client can retry transient execution errors
+    await IdempotencyManager.release(idempotencyKey);
+    omsOrderLatency.observe((performance.now() - routeStart) / 1000);
+
+    return res.status(500).json({
       detail: e.message || 'Failed to execute order',
       rejection_reason: e.message?.includes('INSUFFICIENT') ? 'INSUFFICIENT_FUNDS' :
                         e.message?.includes('SHORT') ? 'NO_SHORT_SELLING' : 'EXECUTION_ERROR'

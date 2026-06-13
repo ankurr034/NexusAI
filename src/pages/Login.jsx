@@ -7,6 +7,7 @@ import { useUser } from '../context/UserContext';
 import { useToast } from '../components/Toast';
 import { API_BASE_URL } from '../config';
 import { LogIn, User, Lock, ArrowRight, Eye, EyeOff, Shield, TrendingUp, Zap, ChevronRight } from 'lucide-react';
+import GoogleSignInButton from '../components/GoogleSignInButton';
 
 const Login = () => {
   const [username, setUsername] = useState('');
@@ -247,6 +248,21 @@ const Login = () => {
                 </svg>
               )}
             </button>
+
+            {/* Google Sign In Integration */}
+            {!!import.meta.env.VITE_GOOGLE_CLIENT_ID && (
+              <>
+                <div className="flex items-center my-4">
+                  <div className="flex-1 h-px bg-white/[0.06]" />
+                  <span className="text-[10px] uppercase tracking-widest text-zinc-600 px-3 font-black">or</span>
+                  <div className="flex-1 h-px bg-white/[0.06]" />
+                </div>
+                <GoogleSignInButton
+                  label="Continue with Google"
+                  onSuccess={() => navigate('/')}
+                />
+              </>
+            )}
           </form>
 
           {/* Divider */}

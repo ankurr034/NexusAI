@@ -1,69 +1,70 @@
 import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
-import mongoose from 'mongoose';
-import { JWT_SECRET, isProd } from '../utils/secrets.js';
+import { JWT_SECRET } from '../utils/secrets.js';
 
-// Demo/sim identities get a free pass OUTSIDE production when auth is omitted
-const DEV_BYPASS_IDS = ['mock_web2_user', 'nexus-sim-user'];
+// Structured logging helper for authentication
+const authSecurityLog = (msg, meta = {}) => {
+  console.warn(`[AUTH_SECURITY] ${new Date().toISOString()} - ${msg}`, JSON.stringify(meta));
+};
 
 export const requireAuth = async (req, res, next) => {
   try {
     let token;
     
-    // 1. Check custom X-User-Token header (our preferred platform JWT header)
+    // 1. Check custom X-User-Token header (preferred)
     const userTokenHeader = req.headers['x-user-token'];
     if (userTokenHeader && userTokenHeader.startsWith('Bearer ')) {
       token = userTokenHeader.split(' ')[1];
     }
     
-    // 2. Fall back to standard Authorization header if X-User-Token is missing
+    // 2. Fall back to standard Authorization header
     const authHeader = req.headers.authorization;
     if (!token && authHeader && authHeader.startsWith('Bearer ')) {
       token = authHeader.split(' ')[1];
     }
 
-    let decoded = null;
-    if (token) {
-      try {
-        decoded = jwt.verify(token, JWT_SECRET);
-      } catch (err) {
-        if (err.name === 'TokenExpiredError') {
-          return res.status(401).json({ success: false, error: 'TOKEN_EXPIRED', detail: 'Platform session expired. Please log in again.' });
-        }
-        return res.status(401).json({ success: false, error: 'Authentication failed', detail: 'Invalid or malformed security token.' });
-      }
-    }
-
-    let userId = req.query.user_id || req.body.user_id || (decoded ? decoded.id : null);
-
-    // Bypass for local development/E2E tests ONLY when not in production
-    if (!isProd && (!token || DEV_BYPASS_IDS.includes(userId)) && (DEV_BYPASS_IDS.includes(userId) || req.headers['x-e2e-test'])) {
-      req.user = {
-        _id: userId || 'nexus-sim-user',
-        id: userId || 'nexus-sim-user',
-        username: 'DemoUser',
-        isPremium: !isProd
-      };
-      return next();
-    }
-
-    if (!decoded) {
+    if (!token) {
+      authSecurityLog('Missing authentication token', { ip: req.ip, path: req.path });
       return res.status(401).json({ success: false, error: 'Authentication required' });
+    }
+
+    let decoded = null;
+    try {
+      // Hardened verification: Explicitly require HMAC-SHA256 algorithm and validate claims
+      decoded = jwt.verify(token, JWT_SECRET, {
+        algorithms: ['HS256']
+      });
+
+      // Reject tokens missing critical claims
+      if (!decoded.exp || !decoded.iat || !decoded.id) {
+        authSecurityLog('Token rejected due to missing standard claims', { decoded, ip: req.ip });
+        return res.status(401).json({ success: false, error: 'Authentication failed', detail: 'Invalid token structure.' });
+      }
+    } catch (err) {
+      if (err.name === 'TokenExpiredError') {
+        authSecurityLog('Token expired', { ip: req.ip });
+        return res.status(401).json({ success: false, error: 'TOKEN_EXPIRED', detail: 'Platform session expired. Please log in again.' });
+      }
+      authSecurityLog('Token verification failure', { error: err.message, ip: req.ip });
+      return res.status(401).json({ success: false, error: 'Authentication failed', detail: 'Invalid or malformed security token.' });
     }
 
     const user = await User.findById(decoded.id);
     if (!user) {
+      authSecurityLog('User not found in database for valid token', { userId: decoded.id });
       return res.status(401).json({ success: false, error: 'User not found' });
     }
 
-    // ═══════════════════════════════════════════════════════════
-    //  ID-OR Prevention (Ownership Validation)
-    // ═══════════════════════════════════════════════════════════
+    // ID-OR Prevention: Ensure that if a user_id parameter is passed in query/body, it matches the token
     const reqUserId = req.query.user_id || req.body.user_id;
     if (reqUserId) {
       const match = String(reqUserId).toLowerCase().trim() === String(user._id).toLowerCase().trim();
-      if (!match && !DEV_BYPASS_IDS.includes(reqUserId)) {
-        console.warn(`[SECURITY] Blocked unauthorized ID-OR access. Authenticated: ${user._id}, Requested: ${reqUserId}`);
+      if (!match) {
+        authSecurityLog('Blocked unauthorized ID-OR access attempt', {
+          authenticatedUser: user._id,
+          requestedUser: reqUserId,
+          ip: req.ip
+        });
         return res.status(403).json({ success: false, error: 'Forbidden', detail: 'Access denied: Cannot query or modify resource of another user.' });
       }
     }
@@ -77,10 +78,15 @@ export const requireAuth = async (req, res, next) => {
 };
 
 export const requirePremium = async (req, res, next) => {
-  // Stacks requirePremium safely on top of requireAuth
   requireAuth(req, res, () => {
     try {
       if (!req.user.isPremium) {
+        authSecurityLog('Premium access denied', {
+          userId: req.user._id,
+          username: req.user.username,
+          path: req.path,
+          ip: req.ip
+        });
         return res.status(403).json({ success: false, error: 'Premium subscription required' });
       }
       next();

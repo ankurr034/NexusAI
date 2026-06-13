@@ -4,21 +4,28 @@ import { API_BASE_URL } from '../config';
 import useSocket from '../hooks/useSocket';
 import useMarketSession from '../hooks/useMarketSession';
 
+const ALLOWED_TICKERS = ['NIFTY 50', 'SENSEX', 'RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'ICICIBANK'];
+
 export default function LiveTickerStrip() {
   const session = useMarketSession(false);
   const [tickerData, setTickerData] = useState([
     { symbol: 'NIFTY 50', value: '22,450.60', change: '+126.35', pct: '+0.56%', up: true },
     { symbol: 'SENSEX', value: '73,876.82', change: '+410.25', pct: '+0.55%', up: true },
-    { symbol: 'BANKNIFTY', value: '47,683.45', change: '-98.20', pct: '-0.21%', up: false },
     { symbol: 'RELIANCE', value: '₹2,980.00', change: '+42.15', pct: '+1.43%', up: true },
-    { symbol: 'TCS', value: '₹3,842.50', change: '-18.30', pct: '-0.47%', up: false }
+    { symbol: 'TCS', value: '₹3,842.50', change: '-18.30', pct: '-0.47%', up: false },
+    { symbol: 'HDFCBANK', value: '₹1,440.50', change: '+10.50', pct: '+0.73%', up: true },
+    { symbol: 'INFY', value: '₹1,400.00', change: '-5.00', pct: '-0.36%', up: false },
+    { symbol: 'ICICIBANK', value: '₹1,100.00', change: '+12.30', pct: '+1.13%', up: true }
   ]);
 
   const { data: socketUpdates } = useSocket('price_update');
 
   useEffect(() => {
     if (socketUpdates && socketUpdates.length > 0) {
-      setTickerData(socketUpdates);
+      const filtered = socketUpdates.filter(item => ALLOWED_TICKERS.includes(item.symbol));
+      if (filtered.length > 0) {
+        setTickerData(filtered);
+      }
     }
   }, [socketUpdates]);
 

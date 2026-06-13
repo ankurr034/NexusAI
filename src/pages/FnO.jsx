@@ -45,12 +45,15 @@ export default function FnO() {
     if (!selectedContract) return;
     
     try {
+      const idempotencyKey = self.crypto?.randomUUID ? self.crypto.randomUUID() : Math.random().toString(36).substring(2) + Date.now().toString(36);
       const res = await axios.post(`${API_BASE_URL}/api/broker/order`, {
         ticker: `${index} ${selectedContract.strike} ${selectedContract.type}`,
         quantity: selectedContract.lotSize,
         price: selectedContract.price,
         order_type: 'MARKET',
         transaction_type: 'BUY'
+      }, {
+        headers: { 'X-Idempotency-Key': idempotencyKey }
       });
       
       toast.success(res.data.message);

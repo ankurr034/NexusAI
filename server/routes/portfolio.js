@@ -5,6 +5,8 @@ import { dbUnavailableDetail, isDbReady } from '../utils/dbReady.js';
 
 const router = express.Router();
 
+const DEMO_IDS = ['mock_web2_user', 'nexus-sim-user'];
+
 function buildDemoPortfolio() {
   const demoHoldings = [
     { symbol: 'RELIANCE', exchange: 'NSE', segment: 'EQ', isin: 'INE002A01018', qty: 50, avg_price: 2400.0 },
@@ -41,6 +43,8 @@ function buildDemoPortfolio() {
 router.get('/', async (req, res) => {
   try {
     const userId = req.query.user_id || 'nexus-sim-user';
+    const isDemoUser = DEMO_IDS.includes(userId);
+    
     if (!isDbReady()) {
       return res.json({ ...buildDemoPortfolio(), warning: dbUnavailableDetail() });
     }
@@ -49,7 +53,14 @@ router.get('/', async (req, res) => {
     const positions = await PaperPosition.find({ userId, quantity: { $gt: 0 } }).lean();
     
     if (positions.length === 0) {
-      return res.json(buildDemoPortfolio());
+      if (isDemoUser) {
+        return res.json(buildDemoPortfolio());
+      }
+      return res.json({
+        mode: 'Paper Trading',
+        summary: { invested: 0, current: 0, pnl: 0 },
+        holdings: []
+      });
     }
 
     // Real positions from PaperTradingEngine
@@ -94,6 +105,8 @@ router.get('/', async (req, res) => {
 router.get('/analysis', async (req, res) => {
   try {
     const userId = req.query.user_id || 'nexus-sim-user';
+    const isDemoUser = DEMO_IDS.includes(userId);
+    
     const positions = isDbReady()
       ? await PaperPosition.find({ userId, quantity: { $gt: 0 } }).lean()
       : [];
@@ -110,11 +123,15 @@ router.get('/analysis', async (req, res) => {
 
     const holdingsData = positions.length > 0 ? positions.map(p => ({
       symbol: p.symbol, qty: p.quantity, avg: p.averagePrice
-    })) : [
+    })) : (isDemoUser ? [
       { symbol: 'RELIANCE', qty: 50, avg: 2400 },
       { symbol: 'TCS', qty: 20, avg: 3500 },
       { symbol: 'HDFCBANK', qty: 100, avg: 1500 }
-    ];
+    ] : []);
+
+    if (holdingsData.length === 0) {
+      return res.json({ score: 100, diversification: [], insights: [] });
+    }
 
     holdingsData.forEach(h => {
       const price = MarketDataService.getCurrentPrice(h.symbol);

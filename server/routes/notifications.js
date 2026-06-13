@@ -1,5 +1,6 @@
 import express from 'express';
 import mongoose from 'mongoose';
+import { addNotificationJob } from '../services/queueManager.js';
 
 const router = express.Router();
 
@@ -93,11 +94,11 @@ router.post('/read', async (req, res) => {
 //  Helper: Push a notification (used by other services)
 // ═══════════════════════════════════════════════════════════
 export async function pushNotification(userId, title, message, type = 'info', link = null) {
-  try {
-    await Notification.create({ userId, title, message, type, link });
-  } catch (err) {
-    console.warn('[NOTIFICATIONS] Push failed:', err.message);
-  }
+  const data = { userId, title, message, type, link };
+  const executeInline = async () => {
+    await Notification.create(data);
+  };
+  await addNotificationJob(data, executeInline);
 }
 
 // ═══════════════════════════════════════════════════════════

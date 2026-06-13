@@ -91,7 +91,7 @@
 .ticker-track {
   display: flex;
   gap: 2rem;
-  animation: tickerScroll 40s linear infinite;
+  animation: tickerScroll 80s linear infinite;
   width: max-content;
 }
 
@@ -350,7 +350,7 @@
 /* ── Ticker animation speed on mobile ── */
 @media (max-width: 768px) {
   .ticker-track {
-    animation-duration: 25s;
+    animation-duration: 50s;
     gap: 1rem;
   }
 }

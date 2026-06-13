@@ -1,30 +1,19 @@
 import YahooFinance from 'yahoo-finance2';
 import { createLogger } from '../utils/logger.js';
-import { invalidateCachePattern } from '../middleware/cache.js';
+import { invalidateCachePattern, redisClient, isRedisReady } from '../middleware/cache.js';
+import { getAllUniqueSymbols, generateFallbackPrices } from '../data/indexConstituents.js';
 
 const log = createLogger('MarketData');
 const yahooFinance = new YahooFinance({ suppressNotices: ['yahooSurvey'] });
 
 // ═══════════════════════════════════════════════════════════
 //  FALLBACK PRICES — Last-known-good baseline
+//  (generated from the central indexConstituents registry)
 // ═══════════════════════════════════════════════════════════
-const FALLBACK_PRICES = {
-  'NIFTY 50': 22450.00, 'SENSEX': 73876.00, 'BANKNIFTY': 47683.00,
-  'RELIANCE': 2950.20, 'TCS': 4120.00, 'HDFCBANK': 1440.50,
-  'INFY': 1400.00, 'ICICIBANK': 1100.00, 'TATAMOTORS': 980.40,
-  'ZOMATO': 165.20, 'NTPC': 340.50, 'POWERGRID': 280.90,
-  'TATAPOWER': 390.20, 'COALINDIA': 450.00, 'WIPRO': 480.00,
-  'BAJFINANCE': 7200.00
-};
+const FALLBACK_PRICES = generateFallbackPrices();
 
-// Valid NSE symbols for validation
-const KNOWN_SYMBOLS = new Set([
-  'NIFTY 50', 'SENSEX', 'BANKNIFTY',
-  'RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'ICICIBANK',
-  'TATAMOTORS', 'ZOMATO', 'NTPC', 'POWERGRID', 'TATAPOWER',
-  'COALINDIA', 'WIPRO', 'BAJFINANCE', 'SBIN', 'LT',
-  'BHARTIARTL', 'ASIANPAINT', 'MARUTI', 'AXISBANK', 'KOTAKBANK'
-]);
+// Valid NSE symbols for validation (union of fallback keys + registry symbols)
+const KNOWN_SYMBOLS = new Set([...Object.keys(FALLBACK_PRICES), ...getAllUniqueSymbols()]);
 
 // Map UI tickers to Yahoo Finance symbols
 const getYahooSymbol = (ticker) => {
@@ -165,6 +154,7 @@ class MarketDataService {
       if (yahooSymbols.length === 0) return;
 
       const quotes = await yahooFinance.quote(yahooSymbols);
+      const updatesForPubSub = [];
 
       quotes.forEach((q) => {
         let originalSymbol = q.symbol;
@@ -183,7 +173,7 @@ class MarketDataService {
         const change = currentPrice - previousClose;
         const changePercent = previousClose ? (change / previousClose) * 100 : 0;
 
-        this.priceCache.set(originalSymbol, {
+        const priceData = {
           price: currentPrice,
           change,
           changePercent,
@@ -191,9 +181,23 @@ class MarketDataService {
           lastUpdated: Date.now(),
           source: 'yahoo',
           marketState: q.marketState || 'UNKNOWN'
-        });
+        };
+
+        this.priceCache.set(originalSymbol, priceData);
+
+        // Populate Redis cache and pub/sub message list
+        if (redisClient && isRedisReady) {
+          redisClient.set(`market_price:${originalSymbol}`, JSON.stringify(priceData), { EX: 86400 }).catch(() => {});
+          updatesForPubSub.push({ symbol: originalSymbol, ...priceData });
+        }
+
         invalidateCachePattern(`cache:/api/stock/${originalSymbol}*`).catch(() => {});
       });
+
+      // Publish quotes batch to Redis pub/sub channel
+      if (updatesForPubSub.length > 0 && redisClient && isRedisReady) {
+        redisClient.publish('market_data_updates', JSON.stringify(updatesForPubSub)).catch(() => {});
+      }
 
       if (quotes.length > 0) {
         invalidateCachePattern('cache:/api/heatmap*').catch(() => {});
@@ -233,13 +237,32 @@ class MarketDataService {
   }
 
   // ═══════════════════════════════════════════════════════════
+  //  Pub/Sub Rehydration Helper
+  // ═══════════════════════════════════════════════════════════
+  updatePriceFromPubSub(symbol, priceData) {
+    this.priceCache.set(symbol, priceData);
+  }
+
+  // ═══════════════════════════════════════════════════════════
   //  Price Access
   // ═══════════════════════════════════════════════════════════
   getCurrentPrice(symbol) {
     const cached = this.priceCache.get(symbol);
     if (cached) return cached.price;
-    // Trigger async fetch for unknown symbols
-    this.fetchLiveQuotes([symbol]).catch(() => {});
+
+    // Asynchronous rehydration from Redis if running in distributed mode
+    if (redisClient && isRedisReady) {
+      redisClient.get(`market_price:${symbol}`).then(val => {
+        if (val) {
+          try {
+            this.priceCache.set(symbol, JSON.parse(val));
+          } catch {}
+        }
+      }).catch(() => {});
+    } else {
+      // Trigger async fetch for unknown symbols in fallback local mode
+      this.fetchLiveQuotes([symbol]).catch(() => {});
+    }
     return FALLBACK_PRICES[symbol] || 1000.0;
   }
 
@@ -404,6 +427,30 @@ class MarketDataService {
     }
     if (cleaned > 0) log.info(`Cleaned ${cleaned} stale history cache entries`);
   }
+
+  // ═══════════════════════════════════════════════════════════
+  //  Batched Quote Fetching — Rate-limit safe for large symbol lists
+  // ═══════════════════════════════════════════════════════════
+  async fetchLiveQuotesBatched(allSymbols, batchSize = 25) {
+    const batches = [];
+    for (let i = 0; i < allSymbols.length; i += batchSize) {
+      batches.push(allSymbols.slice(i, i + batchSize));
+    }
+    for (let b = 0; b < batches.length; b++) {
+      await this.fetchLiveQuotes(batches[b]);
+      // Small delay between batches to avoid Yahoo Finance rate limits
+      if (b < batches.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  //  Static: All Heatmap Symbols
+  // ═══════════════════════════════════════════════════════════
+  static getAllHeatmapSymbols() {
+    return getAllUniqueSymbols();
+  }
 }
 
 // Singleton instance
@@ -412,4 +459,6 @@ const instance = new MarketDataService();
 // Schedule history cache cleanup every 30 minutes
 setInterval(() => instance.cleanupHistoryCache(), 30 * 60 * 1000);
 
+// Re-export the static method on the singleton for convenience
+export { MarketDataService };
 export default instance;

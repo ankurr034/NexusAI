@@ -203,6 +203,7 @@ export default function StockDetail() {
     const tradePrice = orderMode === 'Market' ? currentPriceVal : price;
 
     try {
+      const idempotencyKey = self.crypto?.randomUUID ? self.crypto.randomUUID() : Math.random().toString(36).substring(2) + Date.now().toString(36);
       const res = await axios.post(`${API_BASE_URL}/api/broker/order?user_id=${user.id}`, {
         ticker: tickerId,
         quantity: qty,
@@ -211,6 +212,8 @@ export default function StockDetail() {
         transaction_type: orderType,
         product_type: deliveryType === 'Delivery' ? 'CNC' : 'MIS',
         exchange: exchange
+      }, {
+        headers: { 'X-Idempotency-Key': idempotencyKey }
       });
       
       toast.success(res.data.message);

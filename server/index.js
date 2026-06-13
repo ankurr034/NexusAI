@@ -14,6 +14,8 @@ import rateLimit from 'express-rate-limit';
 import logger, { createLogger } from './utils/logger.js';
 import { trackMetricsMiddleware, getPrometheusMetrics, incrementActiveWebsockets, decrementActiveWebsockets, incrementSocketReconnect } from './middleware/metrics.js';
 import { cacheEndpoint } from './middleware/cache.js';
+import Sentry from '@sentry/node';
+import { register, correlationIdMiddleware, httpLatencyHistogram, activeSocketGauge, socketBroadcastsCounter } from './utils/telemetry.js';
 
 // Routes
 import predictionRoutes from './routes/predictions.js';
@@ -32,6 +34,11 @@ import BrokerGateway from './services/BrokerGateway.js';
 import MarketAnalyticsEngine from './services/MarketAnalyticsEngine.js';
 import PaperTradingEngine from './services/PaperTradingEngine.js';
 import MarketDataService from './services/MarketDataService.js';
+import { initQueues, getQueues } from './services/queueManager.js';
+import queueAdminRoutes from './routes/queueAdmin.js';
+import riskCoachRoutes from './routes/riskCoach.js';
+import scaleAdminRoutes, { activeLoadTest } from './routes/scaleAdmin.js';
+import { getAllUniqueSymbols } from './data/indexConstituents.js';
 
 dotenv.config();
 mongoose.set('bufferCommands', false);
@@ -66,6 +73,29 @@ process.on('unhandledRejection', (reason) => {
 //  Express App & HTTP Server
 // ═══════════════════════════════════════════════════════════
 const app = express();
+
+// Sentry Request Handlers must be the first middleware on the app
+app.use(Sentry.Handlers.requestHandler());
+app.use(Sentry.Handlers.tracingHandler());
+
+// Correlation ID Tracking
+app.use(correlationIdMiddleware);
+
+// HTTP Latency Metric Collection
+app.use((req, res, next) => {
+  const start = performance.now();
+  res.on('finish', () => {
+    const duration = (performance.now() - start) / 1000;
+    if (req.route && req.route.path !== '/metrics') {
+      httpLatencyHistogram.observe(
+        { method: req.method, route: req.route.path, status_code: res.statusCode },
+        duration
+      );
+    }
+  });
+  next();
+});
+
 const analyticsEngine = new MarketAnalyticsEngine();
 const httpServer = createServer(app);
 
@@ -108,11 +138,39 @@ const IS_TIMER_LEADER = String(INSTANCE_ID) === '0';
     ]);
     const pubClient = createClient({ url: process.env.REDIS_URL });
     const subClient = pubClient.duplicate();
-    await Promise.all([pubClient.connect(), subClient.connect()]);
+    const marketSubClient = pubClient.duplicate();
+    
+    await Promise.all([
+      pubClient.connect(),
+      subClient.connect(),
+      marketSubClient.connect()
+    ]);
+    
     io.adapter(createAdapter(pubClient, subClient));
     wsLog.info('Socket.IO Redis adapter attached — broadcasts now fan out across instances.');
+
+    // Subscribe to decoupled worker market data updates
+    await marketSubClient.subscribe('market_data_updates', (message) => {
+      try {
+        const updates = JSON.parse(message);
+        if (updates && updates.length > 0) {
+          // Rehydrate cache in local server memory
+          updates.forEach((u) => {
+            MarketDataService.updatePriceFromPubSub(u.symbol, u);
+          });
+          // Broadcast to connected client sockets on this instance
+          io.emit('price_update', updates);
+          socketBroadcastsCounter.inc({ channel: 'price_update' });
+          io.emit('market_update', { timestamp: Date.now(), status: 'Live' });
+          socketBroadcastsCounter.inc({ channel: 'market_update' });
+        }
+      } catch (err) {
+        wsLog.error('Error handling pub/sub market update:', { error: err.message });
+      }
+    });
+    wsLog.info('Subscribed to Redis market_data_updates channel.');
   } catch (err) {
-    wsLog.error('Failed to attach Redis adapter (is `@socket.io/redis-adapter redis` installed?). Falling back to single-instance broadcasting.', { error: err.message });
+    wsLog.error('Failed to attach Redis adapter or subscribe to updates. Falling back to local mode.', { error: err.message });
   }
 })();
 
@@ -400,9 +458,27 @@ app.use('/api/profile', profileRoutes);
 app.use('/api', marketRoutes);
 app.use('/api', featuresRoutes);
 
-// Analytics REST Endpoint (before premium routes to avoid middleware interception)
-app.get('/api/heatmap', cacheEndpoint(10), (req, res) => {
-  res.json(analyticsEngine.getFullState());
+app.get('/api/heatmap', cacheEndpoint(5), (req, res) => {
+  const indexKey = req.query.index || req.query.mode || 'NIFTY_50';
+  res.json(analyticsEngine.getFullState(indexKey));
+});
+
+app.get('/api/heatmap/summary', cacheEndpoint(5), (req, res) => {
+  const keys = ['NIFTY_50', 'BANK_NIFTY', 'NIFTY_IT', 'NIFTY_FMCG', 'NIFTY_ENERGY', 'NIFTY_MIDCAP_100', 'overbought', 'oversold', 'consolidating'];
+  const summary = {};
+  for (const key of keys) {
+    const state = analyticsEngine.getFullState(key);
+    const total = state.breadth?.total || 1;
+    const adv = state.breadth?.advancers || 0;
+    const score = Math.round((adv / total) * 100);
+    const change = state.intelligence?.avgChange || 0;
+    summary[key] = {
+      score,
+      change: `${change >= 0 ? '+' : ''}${change.toFixed(2)}%`,
+      positive: change >= 0
+    };
+  }
+  res.json(summary);
 });
 
 app.use('/api', premiumFeaturesRoutes);
@@ -410,6 +486,19 @@ app.use('/api/wallet', walletRoutes);
 app.use('/api/orders', ordersRoutes);
 app.use('/api/gtt', ordersRoutes);
 app.use('/api/notifications', notificationsRoutes);
+app.use('/api/admin/queues', queueAdminRoutes);
+app.use('/api/portfolio/risk-coach', riskCoachRoutes);
+app.use('/api/admin/scale', scaleAdminRoutes);
+
+// Prometheus metrics exposure endpoint
+app.get('/metrics', async (req, res) => {
+  try {
+    res.set('Content-Type', register.contentType);
+    res.end(await register.metrics());
+  } catch (err) {
+    res.status(500).end(err.message);
+  }
+});
 
 // ═══════════════════════════════════════════════════════════
 //  DATABASE CONNECTION with Retry
@@ -449,17 +538,12 @@ io.use((socket, next) => {
   const token = socket.handshake.auth?.userToken || socket.handshake.headers?.['x-user-token'] || socket.handshake.query?.token;
   
   if (!token) {
-    // Development bypass for demo client
-    const userId = socket.handshake.query?.user_id;
-    if (process.env.NODE_ENV !== 'production' && (userId === 'mock_web2_user' || userId === 'nexus-sim-user')) {
-      return next();
-    }
     return next(new Error('Authentication error: Platform token required'));
   }
   
   const tokenStr = token.startsWith('Bearer ') ? token.split(' ')[1] : token;
   try {
-    const decoded = jwt.verify(tokenStr, JWT_SECRET);
+    const decoded = jwt.verify(tokenStr, JWT_SECRET, { algorithms: ['HS256'] });
     socket.user = decoded;
     next();
   } catch (err) {
@@ -471,6 +555,7 @@ io.on('connection', (socket) => {
   wsMetrics.totalConnections++;
   wsMetrics.currentConnections++;
   incrementActiveWebsockets();
+  activeSocketGauge.inc();
   wsLog.info(`Client connected: ${socket.id}`, { clients: wsMetrics.currentConnections });
 
   // Reconnection throttling
@@ -525,13 +610,19 @@ io.on('connection', (socket) => {
     socket.join('admin_telemetry');
   });
 
-  socket.on('join_heatmap', () => {
-    socket.join('market_heatmap');
+  socket.on('join_heatmap', (indexKey) => {
+    // Leave any previous heatmap rooms
+    for (const room of socket.rooms) {
+      if (room.startsWith('market_heatmap_')) socket.leave(room);
+    }
+    const key = indexKey || 'NIFTY_50';
+    socket.join(`market_heatmap_${key}`);
   });
 
   socket.on('disconnect', (reason) => {
     wsMetrics.currentConnections--;
     decrementActiveWebsockets();
+    activeSocketGauge.dec();
     socketSubs.clear();
     wsLog.info(`Client disconnected: ${socket.id}`, { reason, clients: wsMetrics.currentConnections });
   });
@@ -567,15 +658,50 @@ setInterval(async () => {
 //  BROADCAST TIMERS  (leader instance only — see IS_TIMER_LEADER)
 // ═══════════════════════════════════════════════════════════
 // Declared at module scope so the startup log can read it on every instance.
-const activeTickers = ['NIFTY 50', 'SENSEX', 'BANKNIFTY', 'RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'ICICIBANK'];
+const indexTickers = ['NIFTY 50', 'SENSEX', 'BANKNIFTY'];
+const activeTickers = [...indexTickers, ...getAllUniqueSymbols()];
 
 if (IS_TIMER_LEADER) {
 
 // Admin Telemetry every 3 seconds
-setInterval(() => {
+setInterval(async () => {
   const stats = BrokerGateway.getAllBrokerStats();
   const analyticsMetrics = analyticsEngine.getMetrics();
   const simulatorMetrics = PaperTradingEngine.getMetrics();
+  
+  // Fetch queue telemetry safely
+  const queues = getQueues();
+  const queueStats = {};
+  
+  try {
+    for (const [name, queue] of Object.entries(queues)) {
+      if (queue) {
+        const [active, waiting, completed, failed, delayed] = await Promise.all([
+          queue.getActiveCount(),
+          queue.getWaitingCount(),
+          queue.getCompletedCount(),
+          queue.getFailedCount(),
+          queue.getDelayedCount()
+        ]);
+        const total = completed + failed;
+        const failedPercentage = total > 0 ? ((failed / total) * 100).toFixed(1) : '0.0';
+        
+        queueStats[name] = {
+          active,
+          waiting,
+          completed,
+          failed,
+          delayed,
+          failedPercentage
+        };
+      } else {
+        queueStats[name] = 'offline';
+      }
+    }
+  } catch (err) {
+    log.error('Failed to fetch queue telemetry for WebSocket broadcast', { error: err.message });
+  }
+
   io.to('admin_telemetry').emit('admin_telemetry_update', {
     timestamp: Date.now(),
     stats,
@@ -584,31 +710,52 @@ setInterval(() => {
     wsMetrics: {
       current: wsMetrics.currentConnections,
       total: wsMetrics.totalConnections
-    }
+    },
+    queueStats,
+    activeLoadTest
   });
+  socketBroadcastsCounter.inc({ channel: 'admin_telemetry_update' });
 }, 3000);
 
-// Heatmap deltas every 500ms
+// Heatmap deltas every 2s (throttled for 200+ tiles)
+const HEATMAP_INDICES = [
+  'NIFTY_50', 'BANK_NIFTY', 'NIFTY_IT', 'NIFTY_FMCG', 'NIFTY_ENERGY', 'NIFTY_MIDCAP_100',
+  'overbought', 'oversold', 'consolidating'
+];
+let heatmapRotation = 0;
 setInterval(() => {
-  const delta = analyticsEngine.computeNextTick();
+  // Rotate through indices, computing one per tick to spread CPU load
+  const indexKey = HEATMAP_INDICES[heatmapRotation % HEATMAP_INDICES.length];
+  const delta = analyticsEngine.computeNextTick(indexKey);
   if (delta.updatedStocks.length > 0) {
-    io.to('market_heatmap').emit('market_heatmap_update', delta);
+    io.to(`market_heatmap_${indexKey}`).emit('market_heatmap_update', delta);
+    socketBroadcastsCounter.inc({ channel: 'market_heatmap_update' });
   }
-}, 500);
+  heatmapRotation++;
+}, 2000);
 
 // ═══════════════════════════════════════════════════════════
-//  MARKET DATA ENGINE — Enhanced Polling
+//  MARKET DATA ENGINE — Enhanced Polling Fallback (Local mode)
 // ═══════════════════════════════════════════════════════════
-MarketDataService.startPolling(activeTickers, 5000);
+if (!process.env.REDIS_URL) {
+  // Poll index tickers at high frequency, stock tickers in batches
+  MarketDataService.startPolling(indexTickers, 5000);
+  // Batch-poll all heatmap constituents at a lower frequency
+  setInterval(() => {
+    MarketDataService.fetchLiveQuotesBatched(activeTickers.filter(t => !indexTickers.includes(t)), 25).catch(() => {});
+  }, 15000);
 
-// Broadcast stock updates — batched
-setInterval(() => {
-  const updates = MarketDataService.getLivePricesForBroadcast(activeTickers);
-  if (updates && updates.length > 0) {
-    io.emit('price_update', updates);
-    io.emit('market_update', { timestamp: Date.now(), status: 'Live' });
-  }
-}, 1000);
+  // Broadcast stock updates — batched (fallback mode only)
+  setInterval(() => {
+    const updates = MarketDataService.getLivePricesForBroadcast(activeTickers);
+    if (updates && updates.length > 0) {
+      io.emit('price_update', updates);
+      socketBroadcastsCounter.inc({ channel: 'price_update' });
+      io.emit('market_update', { timestamp: Date.now(), status: 'Live' });
+      socketBroadcastsCounter.inc({ channel: 'market_update' });
+    }
+  }, 1000);
+}
 
 // Microstructure Updates using LIVE prices
 let microTick = 0;
@@ -646,6 +793,7 @@ setInterval(() => {
     order_book,
     new_trade
   });
+  socketBroadcastsCounter.inc({ channel: 'microstructure_update' });
 }, 2500);
 
 // Smart Alerts — cycling with live prices
@@ -660,12 +808,16 @@ setInterval(() => {
     { title: 'Pattern Breakout', message: 'TCS breaking above 200-SMA with strong volume.', type: 'buy' }
   ];
   io.emit('smart_alert', alerts[alertTick % alerts.length]);
+  socketBroadcastsCounter.inc({ channel: 'smart_alert' });
   alertTick++;
 }, 20000);
 
 } else {
   log.info(`Instance ${INSTANCE_ID} is a follower — broadcast/polling timers run on the leader only.`);
 }
+
+// Sentry error handler must be before any other error middleware
+app.use(Sentry.Handlers.errorHandler());
 
 // ═══════════════════════════════════════════════════════════
 //  GLOBAL ERROR HANDLER
@@ -686,6 +838,9 @@ const startServer = async () => {
     log.error('Server startup aborted because MongoDB is unavailable.');
     process.exit(1);
   }
+
+  // Initialize BullMQ Queues
+  initQueues();
 
   httpServer.listen(PORT, () => {
     log.info(`NexusAI Backend running on port ${PORT}`, {

@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
-import axios from 'axios';
+import axios from '../utils/axiosSetup';
 import { API_BASE_URL } from '../config';
 
 const UserContext = createContext();
@@ -96,6 +96,9 @@ export const UserProvider = ({ children }) => {
       localStorage.setItem('nexus_user_id', res.data.user_id);
       if (res.data.token) localStorage.setItem('nexus_jwt', res.data.token);
       await fetchUserData(res.data.user_id);
+      if (!localStorage.getItem('nexus_jwt')) {
+        return { success: false, error: 'Session initialization failed' };
+      }
       return { success: true };
     } catch (err) {
       // Mock login for offline frontend simulation
@@ -142,6 +145,9 @@ export const UserProvider = ({ children }) => {
       localStorage.setItem('nexus_user_id', res.data.user_id);
       if (res.data.token) localStorage.setItem('nexus_jwt', res.data.token);
       await fetchUserData(res.data.user_id);
+      if (!localStorage.getItem('nexus_jwt')) {
+        return { success: false, error: 'Failed to retrieve authenticated profile session' };
+      }
       return { success: true };
     } catch (err) {
       // Mock Google login for offline frontend simulation when backend is down.
@@ -172,6 +178,9 @@ export const UserProvider = ({ children }) => {
     localStorage.removeItem('nexus_user_id');
     localStorage.removeItem('nexus_jwt');
     localStorage.removeItem('nexus_is_live');
+    localStorage.removeItem('broker_access_token');
+    localStorage.removeItem('broker_refresh_token');
+    localStorage.removeItem('broker_expires_at');
     setUser(null);
     setProfile(null);
     setIsLiveMode(false);

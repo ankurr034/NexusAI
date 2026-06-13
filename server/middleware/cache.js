@@ -1,7 +1,7 @@
 import { createClient } from 'redis';
 
-let redisClient = null;
-let isRedisReady = false;
+export let redisClient = null;
+export let isRedisReady = false;
 
 // Initialize Redis Client if REDIS_URL is provided
 if (process.env.REDIS_URL) {

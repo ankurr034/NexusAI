@@ -30,6 +30,7 @@ const KYC = React.lazy(() => import('./pages/KYC'));
 const AICopilot = React.lazy(() => import('./pages/AICopilot'));
 const SmartBaskets = React.lazy(() => import('./pages/SmartBaskets'));
 const Heatmap = React.lazy(() => import('./pages/Heatmap'));
+const Resources = React.lazy(() => import('./pages/Resources'));
 const TradeJournal = React.lazy(() => import('./pages/TradeJournal'));
 const AdminDashboard = React.lazy(() => import('./pages/AdminDashboard'));
 
@@ -43,6 +44,7 @@ const Rewards = React.lazy(() => import('./pages/Rewards'));
 
 // GAME-CHANGING UNIQUE FEATURES — NOT IN ANY INDIAN APP
 const PortfolioXray = React.lazy(() => import('./pages/PortfolioXray'));
+const RiskCoach = React.lazy(() => import('./pages/RiskCoach'));
 const SentimentRadar = React.lazy(() => import('./pages/SentimentRadar'));
 const EarningsCalendar = React.lazy(() => import('./pages/EarningsCalendar'));
 const OptionsBuilder = React.lazy(() => import('./pages/OptionsBuilder'));
@@ -117,6 +119,7 @@ function AnimatedRoutes() {
       <Route path="/copilot" element={<ProtectedRoute><AICopilot /></ProtectedRoute>} />
       <Route path="/baskets" element={<SmartBaskets />} />
       <Route path="/heatmap" element={<Heatmap />} />
+      <Route path="/resources" element={<Resources />} />
       <Route path="/journal" element={<ProtectedRoute><TradeJournal /></ProtectedRoute>} />
 
       {/* ADMIN */}
@@ -133,6 +136,7 @@ function AnimatedRoutes() {
 
       {/* GAME-CHANGING UNIQUE FEATURES */}
       <Route path="/xray" element={<PremiumRoute><PortfolioXray /></PremiumRoute>} />
+      <Route path="/risk-coach" element={<PremiumRoute><RiskCoach /></PremiumRoute>} />
       <Route path="/sentiment" element={<SentimentRadar />} />
       <Route path="/earnings" element={<EarningsCalendar />} />
       <Route path="/options-builder" element={<OptionsBuilder />} />

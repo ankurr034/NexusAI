@@ -45,11 +45,11 @@ export default function Footer() {
           <div>
             <h4 className="text-xs font-bold text-zinc-400 uppercase tracking-widest mb-4">Resources</h4>
             <div className="space-y-3">
-              <a href="#" className="block text-sm text-zinc-500 hover:text-primary transition-colors">API Documentation</a>
-              <a href="#" className="block text-sm text-zinc-500 hover:text-primary transition-colors">LSTM Model Paper</a>
-              <a href="#" className="block text-sm text-zinc-500 hover:text-primary transition-colors">Risk Disclaimer</a>
-              <a href="#" className="block text-sm text-zinc-500 hover:text-primary transition-colors">Data Sources</a>
-              <a href="#" className="block text-sm text-zinc-500 hover:text-primary transition-colors">Privacy Policy</a>
+              <Link to="/resources?tab=api" className="block text-sm text-zinc-500 hover:text-primary transition-colors">API Documentation</Link>
+              <Link to="/resources?tab=lstm" className="block text-sm text-zinc-500 hover:text-primary transition-colors">LSTM Model Paper</Link>
+              <Link to="/resources?tab=risk" className="block text-sm text-zinc-500 hover:text-primary transition-colors">Risk Disclaimer</Link>
+              <Link to="/resources?tab=datasources" className="block text-sm text-zinc-500 hover:text-primary transition-colors">Data Sources</Link>
+              <Link to="/resources?tab=privacy" className="block text-sm text-zinc-500 hover:text-primary transition-colors">Privacy Policy</Link>
             </div>
           </div>
 

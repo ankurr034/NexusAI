@@ -1,48 +1,53 @@
 import winston from 'winston';
 
-const { combine, timestamp, printf, colorize, errors } = winston.format;
+const { combine, timestamp, printf, colorize, errors, json } = winston.format;
 
 // ═══════════════════════════════════════════════════════════
-//  Structured Logger — Production-Grade
-//  Replaces console.log/console.error with structured output
+//  Structured Logger — Production-Grade (Correlation ID support)
 // ═══════════════════════════════════════════════════════════
 
-const logFormat = printf(({ level, message, timestamp, service, ...meta }) => {
+const consoleFormat = printf(({ level, message, timestamp, service, ...meta }) => {
   const metaStr = Object.keys(meta).length > 0 ? ` ${JSON.stringify(meta)}` : '';
   return `${timestamp} [${level.toUpperCase()}] [${service || 'NEXUS'}] ${message}${metaStr}`;
 });
+
+const isProd = process.env.NODE_ENV === 'production';
 
 const logger = winston.createLogger({
   level: process.env.LOG_LEVEL || 'info',
   format: combine(
     errors({ stack: true }),
     timestamp({ format: 'YYYY-MM-DD HH:mm:ss.SSS' }),
-    logFormat
+    isProd ? json() : consoleFormat
   ),
-  defaultMeta: { service: 'NexusAI' },
+  defaultMeta: { 
+    service: 'NexusAI',
+    environment: process.env.NODE_ENV || 'development'
+  },
   transports: [
-    // Console transport with colors in dev
     new winston.transports.Console({
       format: combine(
-        colorize({ all: process.env.NODE_ENV !== 'production' }),
-        logFormat
+        colorize({ all: !isProd }),
+        isProd ? json() : consoleFormat
       )
     })
   ]
 });
 
-// Add file transport in production
-if (process.env.NODE_ENV === 'production') {
+// Add file transports in production
+if (isProd) {
   logger.add(new winston.transports.File({
     filename: 'logs/error.log',
     level: 'error',
     maxsize: 5 * 1024 * 1024, // 5MB
-    maxFiles: 5
+    maxFiles: 5,
+    format: json()
   }));
   logger.add(new winston.transports.File({
     filename: 'logs/combined.log',
     maxsize: 10 * 1024 * 1024, // 10MB
-    maxFiles: 5
+    maxFiles: 5,
+    format: json()
   }));
 }
 

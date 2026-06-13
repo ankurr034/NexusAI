@@ -31,6 +31,10 @@ export default function PremiumOverlay() {
     }
 
     try {
+      // Fetch Razorpay key config
+      const configRes = await axios.get(`${API_BASE_URL}/api/premium/config`);
+      const rzpKey = configRes.data.key;
+
       // Create order
       const orderRes = await axios.post(`${API_BASE_URL}/api/premium/create-order`, {
         planId: planName,
@@ -39,7 +43,7 @@ export default function PremiumOverlay() {
       const order = orderRes.data;
 
       const options = {
-        key: 'rzp_test_mockkey', // In real app, this should be from env/config
+        key: rzpKey, // Dynamically loaded key from config
         amount: order.amount,
         currency: order.currency,
         name: 'NexusAI',

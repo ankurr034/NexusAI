@@ -19,6 +19,16 @@ const googleClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : nul
 
 router.use(requestSanitizer);
 
+import rateLimit from 'express-rate-limit';
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  message: { detail: 'Too many authentication attempts. Please try again later.' }
+});
+
+router.use(authLimiter);
+
 const hashToken = (token) => crypto.createHash('sha256').update(token).digest('hex');
 
 const generateNonce = () => {
@@ -28,13 +38,15 @@ const generateNonce = () => {
 const issueAccessToken = (user) => jwt.sign(
   { id: user._id, username: user.username, walletAddress: user.walletAddress, isPremium: user.isPremium },
   JWT_SECRET,
-  { expiresIn: '15m' }
+  { expiresIn: '15m', algorithm: 'HS256' }
 );
+
+const issueToken = issueAccessToken;
 
 const issueRefreshToken = (user, familyId) => jwt.sign(
   { id: user._id, familyId },
   JWT_SECRET,
-  { expiresIn: '7d' }
+  { expiresIn: '7d', algorithm: 'HS256' }
 );
 
 // ═══════════════════════════════════════════════════════════
@@ -47,8 +59,10 @@ router.post('/register', async (req, res) => {
     if (!username || !email || !password) {
       return res.status(400).json({ detail: 'Username, email and password are required' });
     }
-    if (password.length < 6) {
-      return res.status(400).json({ detail: 'Password must be at least 6 characters' });
+    
+    // Strict password entropy validation (at least 8 chars, 1 uppercase letter, 1 number)
+    if (password.length < 8 || !/[A-Z]/.test(password) || !/[0-9]/.test(password)) {
+      return res.status(400).json({ detail: 'Password must be at least 8 characters long and contain at least one uppercase letter and one number.' });
     }
 
     const uname = String(username).toLowerCase().trim();
@@ -67,7 +81,8 @@ router.post('/register', async (req, res) => {
       passwordHash,
       full_name: full_name || '',
       kyc_status: 'UNVERIFIED',
-      isPremium: false
+      isPremium: false,
+      walletAddress: `local_user_${uname}` // unique fallback to prevent duplicate index null collisions
     });
 
     res.json({ success: true, user_id: user._id });
@@ -91,7 +106,7 @@ router.post('/login', async (req, res) => {
     if (user && user.passwordHash) {
       const ok = await bcrypt.compare(password, user.passwordHash);
       if (!ok) {
-        writeAuditLog(user._id, 'LOGIN_FAILED', 'FAILURE', { reason: 'Incorrect password', username: ident }, req);
+        writeAuditLog(user._id, 'LOGIN_FAILED', 'FAILURE', { reason: 'Incorrect password' }, req);
         return res.status(401).json({ detail: 'Invalid username or password' });
       }
 
@@ -127,13 +142,7 @@ router.post('/login', async (req, res) => {
       });
     }
 
-    // Documented demo account — allowed ONLY outside production. No prod backdoor.
-    if (!isProd && ident === 'demo' && password === 'demo123') {
-      writeAuditLog('nexus-sim-user', 'LOGIN_SUCCESS', 'SUCCESS', { provider: 'demo_bypass' }, req);
-      return res.json({ success: true, user_id: 'nexus-sim-user' });
-    }
-
-    writeAuditLog(null, 'LOGIN_FAILED', 'FAILURE', { reason: 'User not found', username: ident }, req);
+    writeAuditLog(null, 'LOGIN_FAILED', 'FAILURE', { reason: 'User not found' }, req);
     return res.status(401).json({ detail: 'Invalid username or password' });
   } catch (err) {
     console.error('Error in /login:', err);
@@ -147,70 +156,41 @@ router.post('/login', async (req, res) => {
 router.post('/refresh-token', async (req, res) => {
   try {
     const { refresh_token } = req.body;
-    if (!refresh_token) {
-      return res.status(400).json({ detail: 'Missing refresh token' });
+    if (!refresh_token) return res.status(400).json({ detail: 'Refresh token required' });
+
+    let decoded;
+    try {
+      decoded = jwt.verify(refresh_token, JWT_SECRET, { algorithms: ['HS256'] });
+    } catch (err) {
+      return res.status(401).json({ detail: 'Invalid refresh token' });
     }
 
     const hashedToken = hashToken(refresh_token);
-
-    // 1. Find session matching this token hash
     const session = await UserSession.findOne({ tokenHash: hashedToken });
-
-    if (session) {
-      // Session exists! Check expiry
-      if (session.expiresAt < new Date()) {
-        await UserSession.deleteOne({ _id: session._id });
-        return res.status(401).json({ detail: 'Session expired' });
-      }
-
-      // Valid session. Let's rotate tokens!
-      const user = await User.findById(session.userId);
-      if (!user) {
-        return res.status(401).json({ detail: 'User not found' });
-      }
-
-      const newAccessToken = issueAccessToken(user);
-      const newRefreshToken = issueRefreshToken(user, session.familyId);
-
-      // Update session with new token hash
-      session.tokenHash = hashToken(newRefreshToken);
-      session.lastActivity = new Date();
-      session.expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // extension
-      await session.save();
-
-      writeAuditLog(user._id, 'TOKEN_REFRESH', 'SUCCESS', { familyId: session.familyId }, req);
-
-      return res.json({
-        token: newAccessToken,
-        refreshToken: newRefreshToken
-      });
+    if (!session) {
+      // Refresh token reuse/theft detection: invalidate all sessions in family
+      await UserSession.deleteMany({ familyId: decoded.familyId });
+      writeAuditLog(decoded.id, 'REFRESH_THEFT', 'FAILURE', { familyId: decoded.familyId }, req);
+      return res.status(401).json({ detail: 'Token reuse detected. All sessions revoked.' });
     }
 
-    // 2. Token not found. Is it a replay attack?
-    // Decode the token to see if it has a familyId (which indicates it's a validly signed token but already rotated/revoked)
-    try {
-      const decoded = jwt.verify(refresh_token, JWT_SECRET);
-      if (decoded && decoded.familyId) {
-        // Replay/suspicious attempt detected! Revoke all sessions in the family immediately
-        const deletedResult = await UserSession.deleteMany({ familyId: decoded.familyId });
-        writeAuditLog(
-          decoded.id, 
-          'SUSPICIOUS_ACTIVITY', 
-          'SUSPICIOUS', 
-          { 
-            reason: 'Refresh token reuse / Replay attack', 
-            familyId: decoded.familyId,
-            revokedSessionsCount: deletedResult.deletedCount 
-          }, 
-          req
-        );
-        return res.status(401).json({ detail: 'Token revoked: Security breach suspected' });
-      }
-    } catch (err) {
-      // Token signature was invalid or expired, just return unauthenticated
-    }
+    const user = await User.findById(decoded.id);
+    if (!user) return res.status(401).json({ detail: 'User not found' });
 
-    return res.status(401).json({ detail: 'Invalid refresh token' });
+    // Rotate tokens
+    const nextAccessToken = issueAccessToken(user);
+    const nextRefreshToken = issueRefreshToken(user, decoded.familyId);
+
+    // Update Session
+    session.tokenHash = hashToken(nextRefreshToken);
+    session.expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    await session.save();
+
+    res.json({
+      success: true,
+      token: nextAccessToken,
+      refreshToken: nextRefreshToken
+    });
   } catch (err) {
     console.error('Error in /refresh-token:', err);
     res.status(500).json({ detail: 'Internal server error' });
@@ -218,7 +198,7 @@ router.post('/refresh-token', async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════
-//  POST /api/auth/logout — Revoke current session
+//  POST /api/auth/logout — Invalidate Session
 // ═══════════════════════════════════════════════════════════
 router.post('/logout', async (req, res) => {
   try {
@@ -237,53 +217,25 @@ router.post('/logout', async (req, res) => {
   }
 });
 
+// ═══════════════════════════════════════════════════════════
+//  GET /api/auth/me — Load authenticated profile directly from JWT user context
+// ═══════════════════════════════════════════════════════════
 router.get('/me', requireAuth, async (req, res) => {
-  const { user_id } = req.query;
-  const DEMO_IDS = ['mock_web2_user', 'nexus-sim-user'];
-
   try {
-    let dbUser = null;
-    if (user_id && !DEMO_IDS.includes(user_id)) {
-      const mongoose = (await import('mongoose')).default;
-      if (mongoose.Types.ObjectId.isValid(user_id)) {
-        dbUser = await User.findById(user_id);
-      } else {
-        dbUser = await User.findOne({ walletAddress: user_id.toLowerCase() });
-      }
-    }
-
-    if (dbUser) {
-      // Real account — report real, DB-backed flags (no hardcoded premium/verified).
-      return res.json({
-        user: {
-          id: dbUser._id,
-          username: dbUser.username || dbUser.walletAddress || 'User',
-          email: dbUser.email || '',
-          full_name: dbUser.full_name || '',
-          kyc_status: dbUser.kyc_status || 'UNVERIFIED',
-          account_mode: dbUser.account_mode || 'demo',
-          isPremium: !!dbUser.isPremium,
-          subscription_plan: dbUser.subscription_plan || 'Free',
-          walletAddress: dbUser.walletAddress || null
-        },
-        profile: { risk_profile: 'MODERATE', trading_experience: 'INTERMEDIATE' },
-        broker_connected: false
-      });
-    }
-
-    // Demo/sim session. Full access is granted in development only — never in production.
     return res.json({
       user: {
-        id: user_id || 'mock_web2_user',
-        username: 'DemoUser',
-        email: 'demo@nexus.ai',
-        kyc_status: isProd ? 'UNVERIFIED' : 'VERIFIED',
-        account_mode: 'demo',
-        isPremium: !isProd,
-        subscription_plan: isProd ? 'Free' : 'Demo'
+        id: req.user._id,
+        username: req.user.username || req.user.walletAddress || 'User',
+        email: req.user.email || '',
+        full_name: req.user.full_name || '',
+        kyc_status: req.user.kyc_status || 'UNVERIFIED',
+        account_mode: req.user.account_mode || 'demo',
+        isPremium: !!req.user.isPremium,
+        subscription_plan: req.user.subscription_plan || 'Free',
+        walletAddress: req.user.walletAddress || null
       },
       profile: { risk_profile: 'MODERATE', trading_experience: 'INTERMEDIATE' },
-      broker_connected: false
+      broker_connected: req.user.broker_connected || false
     });
   } catch (err) {
     console.error('Error in /me:', err);
@@ -358,12 +310,23 @@ router.post('/google', async (req, res) => {
       return res.status(503).json({ detail: 'Google sign-in is not configured on the server' });
     }
 
-    // Verify the ID token against Google. Throws if invalid/expired/wrong audience.
-    const ticket = await googleClient.verifyIdToken({
-      idToken: credential,
-      audience: GOOGLE_CLIENT_ID,
-    });
-    const payload = ticket.getPayload();
+    let payload;
+    if (credential.startsWith('ya29.')) {
+      // Resolve Google profile info using access token via userinfo endpoint
+      const response = await fetch(`https://www.googleapis.com/oauth2/v3/userinfo?access_token=${credential}`);
+      if (!response.ok) {
+        return res.status(401).json({ detail: 'Failed to verify Google access token' });
+      }
+      payload = await response.json();
+    } else {
+      // Verify the ID token against Google. Throws if invalid/expired/wrong audience.
+      const ticket = await googleClient.verifyIdToken({
+        idToken: credential,
+        audience: GOOGLE_CLIENT_ID,
+      });
+      payload = ticket.getPayload();
+    }
+
     if (!payload || !payload.email) {
       return res.status(401).json({ detail: 'Could not verify Google account' });
     }
@@ -408,6 +371,7 @@ router.post('/google', async (req, res) => {
         authProvider: 'google',
         kyc_status: 'UNVERIFIED',
         isPremium: false,
+        walletAddress: `google_user_${googleId}` // unique fallback to prevent duplicate index null collisions
       });
     }
 

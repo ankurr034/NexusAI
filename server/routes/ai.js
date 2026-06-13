@@ -1,13 +1,14 @@
 import express from 'express';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { requirePremium } from '../middleware/auth.js';
+import { addAIJob } from '../services/queueManager.js';
 
 const router = express.Router();
 router.use(requirePremium);
 
 const API_KEY = process.env.GEMINI_API_KEY;
-let genAI;
-let model;
+export let genAI;
+export let model;
 
 if (API_KEY) {
   genAI = new GoogleGenerativeAI(API_KEY);
@@ -54,14 +55,14 @@ setInterval(() => {
 // ═══════════════════════════════════════════════════════════
 //  Response validation — never trust raw model output.
 // ═══════════════════════════════════════════════════════════
-const VALID_VERDICTS = ['BUY', 'SELL', 'HOLD', 'STRONG BUY', 'ERROR'];
+export const VALID_VERDICTS = ['BUY', 'SELL', 'HOLD', 'STRONG BUY', 'ERROR'];
 
-function extractJson(text) {
+export function extractJson(text) {
   const match = text.match(/\{[\s\S]*\}/);
   return JSON.parse(match ? match[0] : text);
 }
 
-function validateAdvice(obj) {
+export function validateAdvice(obj) {
   if (!obj || typeof obj !== 'object') return null;
   if (typeof obj.title !== 'string' || !obj.title.trim()) return null;
   if (!VALID_VERDICTS.includes(obj.verdict)) return null;
@@ -85,7 +86,7 @@ function validateAdvice(obj) {
   };
 }
 
-const PROMPT = (message) => `
+export const PROMPT = (message) => `
 You are a senior financial analyst and AI trading copilot.
 User query: "${message}"
 
@@ -114,33 +115,44 @@ router.post('/chat', async (req, res) => {
     const limit = checkAndRecord(getUserKey(req));
     if (!limit.ok) return res.status(limit.code).json({ error: limit.error });
 
-    if (!model) {
-      return res.json({
-        title: 'Mock AI Response',
-        verdict: 'HOLD',
-        body: 'Gemini API key is not configured. This is a simulated response.\n\n**Risk:** Medium\n**Recommendation:** Wait for API integration.',
-        symbol: 'MOCK', price: 100.0, change_pct: 0.0, confidence: 50
-      });
-    }
+    const runAIJobInline = async () => {
+      if (!model) {
+        return {
+          title: 'Mock AI Response',
+          verdict: 'HOLD',
+          body: 'Gemini API key is not configured. This is a simulated response.\n\n**Risk:** Medium\n**Recommendation:** Wait for API integration.',
+          symbol: 'MOCK', price: 100.0, change_pct: 0.0, confidence: 50
+        };
+      }
 
-    // One retry if the model returns malformed / schema-invalid output.
-    let parsed = null;
-    for (let attempt = 0; attempt < 2 && !parsed; attempt++) {
-      try {
-        const result = await model.generateContent(PROMPT(message));
-        parsed = validateAdvice(extractJson(result.response.text()));
-      } catch (e) {
-        if (attempt === 1) {
-          console.error('Gemini call/parse failed after retry:', e.message);
+      let parsed = null;
+      for (let attempt = 0; attempt < 2 && !parsed; attempt++) {
+        try {
+          const result = await model.generateContent(PROMPT(message));
+          parsed = validateAdvice(extractJson(result.response.text()));
+        } catch (e) {
+          if (attempt === 1) {
+            console.error('Gemini call/parse failed after retry:', e.message);
+          }
         }
       }
+
+      if (!parsed) {
+        throw new Error('AI response was invalid. Please rephrase and try again.');
+      }
+      return parsed;
+    };
+
+    const queueResult = await addAIJob(
+      { userId: getUserKey(req), message },
+      runAIJobInline
+    );
+
+    if (!queueResult.success || !queueResult.result) {
+      return res.status(502).json({ error: 'AI response was invalid or timed out.' });
     }
 
-    if (!parsed) {
-      return res.status(502).json({ error: 'AI response was invalid. Please rephrase and try again.' });
-    }
-
-    res.json(parsed);
+    res.json(queueResult.result);
   } catch (error) {
     console.error('Error in AI Chat:', error);
     res.status(500).json({ error: 'Failed to generate response' });

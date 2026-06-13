@@ -16,6 +16,18 @@ const fadeUp = {
   show: { opacity: 1, y: 0, transition: { duration: 0.4 } },
 };
 
+const HEATMAP_SECTIONS = [
+  { key: 'NIFTY_50', label: 'NIFTY 50', type: 'index' },
+  { key: 'BANK_NIFTY', label: 'BANK NIFTY', type: 'index' },
+  { key: 'NIFTY_IT', label: 'IT INDEX', type: 'index' },
+  { key: 'NIFTY_FMCG', label: 'FMCG', type: 'index' },
+  { key: 'NIFTY_ENERGY', label: 'ENERGY', type: 'index' },
+  { key: 'NIFTY_MIDCAP_100', label: 'MIDCAP 100', type: 'index' },
+  { key: 'overbought', label: 'Overbought', type: 'mode' },
+  { key: 'oversold', label: 'Oversold', type: 'mode' },
+  { key: 'consolidating', label: 'Consolidating', type: 'mode' },
+];
+
 export default function Explore() {
   const [data, setData] = useState({ indices: [], top_picks: [], news: [], most_traded: [], volume_surged: [] });
   const [loading, setLoading] = useState(true);
@@ -25,6 +37,10 @@ export default function Explore() {
   const [themeLoading, setThemeLoading] = useState(false);
   const [marketPulse, setMarketPulse] = useState({ sentiment: 68, trend: 'Bullish', fear_greed: 'Greed', signal: 'BUY' });
   const [watchlistLoading, setWatchlistLoading] = useState(false);
+  const [heatmapSummary, setHeatmapSummary] = useState(null);
+  const [selectedHeatmapSection, setSelectedHeatmapSection] = useState('NIFTY_50');
+  const [heatmapStocks, setHeatmapStocks] = useState([]);
+  const [heatmapLoading, setHeatmapLoading] = useState(false);
   const { user } = useUser();
   const toast = useToast();
 
@@ -64,6 +80,9 @@ export default function Explore() {
         
         const pulseRes = await axios.get(`${API_BASE_URL}/api/market/pulse`);
         setMarketPulse(pulseRes.data);
+
+        const summaryRes = await axios.get(`${API_BASE_URL}/api/heatmap/summary`);
+        setHeatmapSummary(summaryRes.data);
       } catch (e) {
         console.error('Error fetching', e);
         toast.error('Failed to load market data');
@@ -84,6 +103,41 @@ export default function Explore() {
          .finally(() => setWatchlistLoading(false));
     }
   }, [user]);
+
+  useEffect(() => {
+    const fetchHeatmapData = async () => {
+      setHeatmapLoading(true);
+      try {
+        const option = HEATMAP_SECTIONS.find(o => o.key === selectedHeatmapSection);
+        const queryParam = option?.type === 'mode' ? `mode=${selectedHeatmapSection}` : `index=${selectedHeatmapSection}`;
+        const res = await axios.get(`${API_BASE_URL}/api/heatmap?${queryParam}`);
+        
+        const stocks = [];
+        if (res.data && res.data.children) {
+          res.data.children.forEach(sector => {
+            if (sector.children) {
+              sector.children.forEach(st => {
+                stocks.push({
+                  symbol: st.symbol,
+                  name: st.fullName,
+                  sector: sector.name,
+                  price: st.price,
+                  change_pct: st.change_pct,
+                  momentumScore: st.momentumScore
+                });
+              });
+            }
+          });
+        }
+        setHeatmapStocks(stocks);
+      } catch (e) {
+        console.error(e);
+      } finally {
+        setHeatmapLoading(false);
+      }
+    };
+    fetchHeatmapData();
+  }, [selectedHeatmapSection]);
 
   return (
     <motion.div variants={stagger} initial="hidden" animate="show" className="space-y-10">
@@ -278,35 +332,78 @@ export default function Explore() {
 
       {/* ─── NEXUS HEATMAP ─── */}
       <motion.section variants={fadeUp}>
-        <div className="flex justify-between items-center mb-6">
+        <div className="flex justify-between items-center mb-5">
            <h2 className="text-lg font-bold text-white flex items-center gap-2">
               <Sparkles className="w-5 h-5 text-emerald-400" /> Nexus Market Heatmap
            </h2>
-           <div className="flex items-center gap-4 text-[10px] font-black tracking-widest uppercase">
-              <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-emerald-500" /> Overbought</div>
-              <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-red-500" /> Oversold</div>
-              <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-zinc-600" /> Consolidating</div>
-           </div>
+           <span className="text-[10px] text-zinc-600 font-bold uppercase tracking-widest">Live Constituents</span>
         </div>
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
-           {[
-             { name: 'NIFTY 50', score: 72, change: '+1.4%', color: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' },
-             { name: 'BANK NIFTY', score: 48, change: '+0.2%', color: 'bg-zinc-800 text-zinc-400 border-white/5' },
-             { name: 'IT INDEX', score: 25, change: '-2.1%', color: 'bg-red-500/20 text-red-400 border-red-500/30' },
-             { name: 'FMCG', score: 85, change: '+2.8%', color: 'bg-emerald-600/30 text-emerald-300 border-emerald-500/40 shadow-[0_0_20px_rgba(16,185,129,0.1)]' },
-             { name: 'ENERGY', score: 92, change: '+4.5%', color: 'bg-emerald-700/40 text-emerald-200 border-emerald-500/60 shadow-[0_0_30px_rgba(16,185,129,0.15)]' },
-             { name: 'MIDCAP 100', score: 64, change: '+1.1%', color: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' },
-           ].map((sector, idx) => (
-             <motion.div 
-               key={idx}
-               whileHover={{ scale: 1.02, y: -4 }}
-               className={`p-6 rounded-3xl border transition-all flex flex-col items-center text-center cursor-pointer ${sector.color}`}
-             >
-                <span className="text-[10px] font-black uppercase tracking-widest mb-2 opacity-60">{sector.name}</span>
-                <span className="text-2xl font-black mb-1 font-mono-data">{sector.change}</span>
-                <span className="text-[9px] font-bold uppercase tracking-tighter opacity-50">Strength: {sector.score}/100</span>
-             </motion.div>
-           ))}
+
+        {/* Dynamic Selector Tabs */}
+        <div className="flex items-center gap-2 flex-wrap mb-5">
+          {HEATMAP_SECTIONS.map(opt => (
+            <button
+              key={opt.key}
+              onClick={() => setSelectedHeatmapSection(opt.key)}
+              className={`px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-wider transition-all duration-200 border ${
+                selectedHeatmapSection === opt.key
+                  ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+                  : 'bg-white/5 text-zinc-400 border-white/10 hover:bg-white/10'
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Dynamic Stock List */}
+        <div className="glass-panel overflow-hidden border border-white/[0.04] bg-white/[0.01]">
+          {heatmapLoading ? (
+            <div className="h-48 flex items-center justify-center flex-col gap-3">
+              <RefreshCw className="w-6 h-6 animate-spin text-primary" />
+              <span className="text-xs text-zinc-500 font-semibold">Loading constituents...</span>
+            </div>
+          ) : heatmapStocks.length === 0 ? (
+            <div className="p-8 text-center text-zinc-600 text-sm font-semibold">
+              No constituents available for this section.
+            </div>
+          ) : (
+            <div className="divide-y divide-white/[0.04] max-h-[350px] overflow-y-auto pr-1">
+              {heatmapStocks.map((stock, i) => (
+                <Link
+                  key={i}
+                  to={`/stock/${stock.symbol}`}
+                  className="px-6 py-4 flex items-center justify-between hover:bg-white/[0.02] transition-colors group no-underline"
+                >
+                  <div className="flex items-center gap-4">
+                    <div className="w-9 h-9 rounded-xl bg-white/[0.03] border border-white/[0.06] flex items-center justify-center group-hover:scale-105 group-hover:border-primary/30 transition-all">
+                      <span className="font-black text-sm text-gradient">{stock.symbol.charAt(0)}</span>
+                    </div>
+                    <div>
+                      <p className="text-sm font-bold text-white group-hover:text-primary transition-colors">
+                        {stock.symbol}
+                      </p>
+                      <p className="text-[10px] text-zinc-500 font-bold truncate max-w-[150px] sm:max-w-xs">{stock.name}</p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-6">
+                    <div className="hidden sm:block text-right">
+                      <p className="text-[10px] text-zinc-600 font-bold uppercase tracking-widest">Sector</p>
+                      <p className="text-xs text-zinc-400 font-semibold">{stock.sector}</p>
+                    </div>
+                    <div className="text-right min-w-[70px]">
+                      <p className="text-sm font-black text-white font-mono-data">₹{stock.price.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</p>
+                      <p className={`text-[10px] font-black font-mono-data ${stock.change_pct >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                        {stock.change_pct >= 0 ? '+' : ''}{stock.change_pct.toFixed(2)}%
+                      </p>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-zinc-800 transition-transform group-hover:translate-x-1" />
+                  </div>
+                </Link>
+              ))}
+            </div>
+          )}
         </div>
       </motion.section>
 

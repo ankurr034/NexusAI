@@ -8,6 +8,7 @@ import {
   CreditCard, Building2, Smartphone, CheckCircle2, AlertCircle,
   RefreshCw, ChevronLeft, Eye, EyeOff, AtSign, Fingerprint
 } from 'lucide-react';
+import GoogleSignInButton from '../components/GoogleSignInButton';
 
 export default function Register() {
   const [step, setStep] = useState(0);
@@ -255,6 +256,21 @@ export default function Register() {
                   className="w-full py-4 bg-primary text-black font-black uppercase tracking-widest rounded-xl hover:scale-[1.01] active:scale-[0.99] transition-all flex items-center justify-center gap-2 shadow-lg shadow-primary/20 text-sm mt-2">
                   Continue Setup <ArrowRight className="w-4 h-4" />
                 </button>
+
+                {/* Google Signup Integration */}
+                {!!import.meta.env.VITE_GOOGLE_CLIENT_ID && (
+                  <>
+                    <div className="flex items-center my-4">
+                      <div className="flex-1 h-px bg-white/[0.06]" />
+                      <span className="text-[10px] uppercase tracking-widest text-zinc-600 px-3 font-black">or</span>
+                      <div className="flex-1 h-px bg-white/[0.06]" />
+                    </div>
+                    <GoogleSignInButton
+                      label="Sign up with Google"
+                      onSuccess={() => navigate('/')}
+                    />
+                  </>
+                )}
               </motion.form>
             )}
 

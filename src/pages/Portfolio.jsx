@@ -62,6 +62,7 @@ export default function Portfolio() {
     if (!targetHolding || !user) return;
     const targetQty = qtyToSell || sellQty || targetHolding.qty;
     try {
+      const idempotencyKey = self.crypto?.randomUUID ? self.crypto.randomUUID() : Math.random().toString(36).substring(2) + Date.now().toString(36);
       await axios.post(`${API_BASE_URL}/api/broker/order?user_id=${user.id}`, {
         ticker: targetHolding.symbol,
         quantity: targetQty,
@@ -69,6 +70,8 @@ export default function Portfolio() {
         transaction_type: 'SELL',
         order_type: 'MARKET',
         product_type: 'CNC'
+      }, {
+        headers: { 'X-Idempotency-Key': idempotencyKey }
       });
       toast.success(`[${mode}] Sold ${targetQty} shares of ${targetHolding.symbol}`);
       fetchLivePortfolio();

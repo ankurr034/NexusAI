@@ -25,6 +25,7 @@ export default function TradeSimulator() {
   const handleExecutePaperTrade = async (action) => {
     setIsPlacing(true);
     try {
+      const idempotencyKey = self.crypto?.randomUUID ? self.crypto.randomUUID() : Math.random().toString(36).substring(2) + Date.now().toString(36);
       const res = await axios.post(`${API_BASE_URL}/api/broker/order`, {
          user_id: user?.walletAddress || 'nexus-sim-user',
          broker_name: 'Simulated Broker',
@@ -35,6 +36,8 @@ export default function TradeSimulator() {
              type: 'MARKET',
              isPaperTrade: true // Routes to PaperTradingEngine!
          }
+      }, {
+        headers: { 'X-Idempotency-Key': idempotencyKey }
       });
       
       if (res.data.success) {

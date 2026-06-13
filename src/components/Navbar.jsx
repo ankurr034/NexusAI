@@ -108,6 +108,7 @@ export default function Navbar() {
   const navLinks = useMemo(() => [
     { path: '/', label: 'Explore' },
     { path: '/copilot', label: '🤖 AI Copilot' },
+    { path: '/risk-coach', label: '🛡️ Risk Coach' },
     { path: '/simulator', label: '⚡ Simulator' },
     { path: '/smart-money', label: '💰 Smart Money' },
     { path: '/trading-dna', label: '🧬 My DNA' },

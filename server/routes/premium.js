@@ -25,6 +25,13 @@ const PLAN_PRICES = {
   'Elite AI': 2499
 };
 
+// Get configuration (public key)
+router.get('/config', (req, res) => {
+  res.json({
+    key: process.env.RAZORPAY_KEY_ID || 'rzp_test_mockkey'
+  });
+});
+
 // Create an order
 router.post('/create-order', async (req, res) => {
   try {
